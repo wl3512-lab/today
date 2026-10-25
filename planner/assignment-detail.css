@@ -1,0 +1,171 @@
+/* Assignment detail — reference: bhauw/Daily-Planner tasks workspace and tokens.
+   Scoped to the detail page; scheduling, study and navigation remain owned by
+   their existing renderers. Main task + supporting tools, stacked below 1100px. */
+#assignmentPage {
+  --detail-muted: #a6a6ab;
+  --detail-line: #3a3a38;
+  --detail-blue: #3f9bff;
+  --detail-fill: #0d6ad0;
+  padding: 8px 12px 32px;
+  scroll-padding-block: 16px;
+}
+#assignmentPage.active {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-rows: auto auto auto auto 1fr;
+  gap: 0 32px;
+  align-content: start;
+  align-items: start;
+}
+#assignmentPage > * { min-width: 0; }
+#assignmentPage .a-back {
+  grid-column: 1 / -1; gap: 10px; margin-bottom: 16px;
+}
+#assignmentPage .a-back button {
+  border: 1px solid var(--detail-line); border-radius: 6px;
+  background: transparent; min-width: 36px; min-height: 36px;
+  font-size: 20px;
+}
+#assignmentPage .a-back span {
+  font-size: 11px; font-weight: 600; letter-spacing: .08em;
+  color: var(--detail-muted);
+}
+#assignmentPage #aHeader {
+  grid-column: 1 / -1; padding: 0 0 24px;
+  margin-bottom: 24px; gap: 12px 24px;
+  background: transparent !important;
+  border: 0 !important; border-bottom: 1px solid var(--detail-line) !important;
+  border-radius: 0 !important;
+}
+#assignmentPage .a-title {
+  max-width: 48ch; font-size: clamp(21px, 1.8vw, 27px);
+  line-height: 1.3; font-weight: 600; letter-spacing: -.025em;
+  text-wrap: pretty;
+}
+#assignmentPage .a-header .a-hand {
+  min-height: 36px; padding: 0 14px; border-radius: 6px;
+  border: 1px solid #808080; background: transparent;
+  font-size: 12px; font-weight: 500;
+}
+#assignmentPage .a-facts { align-items: center; gap: 8px; }
+#assignmentPage .a-facts .now-class { font-size: 11px; color: var(--detail-muted); }
+#assignmentPage .a-facts .wt,
+#assignmentPage .a-facts .due-when {
+  padding: 4px 7px !important; border-radius: 4px !important;
+  font-size: 11px !important; font-weight: 500 !important;
+  color: #c4c4c8 !important; background: #2c2c2c !important;
+}
+#assignmentPage .a-facts .wt.high { color: #ffd60a !important; background: #373122 !important; }
+#assignmentPage .a-facts .wt.late { color: #ff8d86 !important; background: #392828 !important; }
+#assignmentPage .focus-due,
+#assignmentPage .focus-note { font-size: 12px; font-weight: 400; line-height: 1.5; color: var(--detail-muted); }
+#assignmentPage .a-section {
+  padding: 0; border-radius: 0; background: transparent;
+  gap: 12px; box-shadow: none;
+}
+#assignmentPage .a-h {
+  font-size: 11px; font-weight: 600; letter-spacing: .09em;
+  line-height: 1.5; text-transform: uppercase; color: var(--detail-muted);
+}
+#assignmentPage #aBrief { grid-column: 1; grid-row: 3 / 6; padding-right: 8px; }
+#assignmentPage .a-gist,
+#assignmentPage .a-raw {
+  max-width: 70ch; font-size: 14px; line-height: 1.7;
+  color: #dedee1; margin-bottom: 12px; text-wrap: pretty;
+}
+#assignmentPage .a-step {
+  min-height: 48px; gap: 12px; padding: 8px 0;
+  border-bottom: 1px solid #303030;
+}
+#assignmentPage .a-step + .a-step { margin-top: -12px; }
+#assignmentPage .a-step input {
+  flex: 0 0 18px; width: 18px; height: 18px; margin: 0;
+  border-radius: 4px; accent-color: var(--detail-blue);
+}
+#assignmentPage .a-step label { font-size: 14px; font-weight: 400; line-height: 1.5; }
+#assignmentPage .a-step .a-min {
+  min-width: 42px; text-align: right; font-size: 11px;
+  font-family: ui-monospace, Menlo, monospace; font-weight: 400;
+  color: var(--detail-muted);
+}
+#assignmentPage .a-step:hover { background: #252525; }
+#assignmentPage .a-watch {
+  color: #c7b88e; font-size: 12px; line-height: 1.55;
+  padding: 8px 12px; border-left: 2px solid #8c7950;
+  background: #27251f;
+}
+#assignmentPage .a-watch + .a-watch { margin-top: -8px; }
+#assignmentPage #aStart {
+  grid-column: 2; grid-row: 3; position: static;
+  padding: 0 0 20px 24px; border-left: 1px solid var(--detail-line);
+}
+#assignmentPage .a-start .go-btn {
+  min-height: 44px; width: 100%; border-radius: 6px;
+  background: var(--detail-fill) !important; color: #fff !important;
+  border: 1px solid transparent; font-size: 13px; font-weight: 600;
+  box-shadow: none; text-transform: none;
+}
+#assignmentPage .a-start .go-btn:hover { background: #0a5fbb !important; }
+#assignmentPage #aPlan {
+  grid-column: 2; grid-row: 4; padding: 4px 0 24px 24px;
+  border-left: 1px solid var(--detail-line);
+}
+#assignmentPage #aOpen {
+  grid-column: 2; grid-row: 5; padding: 20px 0 12px 24px;
+  border-left: 1px solid var(--detail-line);
+  border-top: 1px solid var(--detail-line);
+}
+#assignmentPage .plan-row { gap: 8px; }
+#assignmentPage .plan-note { color: var(--detail-muted); font-size: 12px; line-height: 1.5; }
+#assignmentPage .plan-btn,
+#assignmentPage .a-open-all {
+  align-self: flex-start; min-height: 36px; padding: 0 12px;
+  border: 1px solid #808080; border-radius: 6px;
+  background: transparent; color: #dedee1; font-size: 12px; font-weight: 500;
+}
+#assignmentPage .plan-chip { font-size: 11px; line-height: 1.6; white-space: normal; }
+#assignmentPage .a-link {
+  padding: 8px 0; min-height: 44px; background: transparent;
+  border-bottom: 1px solid #303030; border-radius: 0;
+  font-size: 12px; font-weight: 500; line-height: 1.5;
+  overflow-wrap: anywhere; color: #dedee1;
+}
+#assignmentPage .a-link:hover { color: var(--detail-blue); }
+#assignmentPage .a-link small { font-size: 10px; font-weight: 400; color: var(--detail-muted); }
+#assignmentPage :is(button, a, input):focus-visible {
+  outline: 2px solid var(--detail-blue); outline-offset: 3px;
+}
+/* The hour picker needs room: expand its supporting panel across the page
+   while editing, keeping every day reachable inside the scroll container. */
+#assignmentPage:has(.a-strip) #aBrief { grid-row: 3; }
+#assignmentPage:has(.a-strip) #aPlan {
+  grid-column: 1 / -1; grid-row: 4; margin-top: 24px;
+  padding: 20px 0; border-left: 0; border-top: 1px solid var(--detail-line);
+}
+#assignmentPage:has(.a-strip) #aOpen { grid-column: 1 / -1; border-left: 0; padding-left: 0; }
+@media (max-width: 1100px) {
+  #assignmentPage.active { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  #assignmentPage #aHeader { grid-column: 1; margin-bottom: 20px; }
+  #assignmentPage #aStart { grid-column: 1; grid-row: 3; border: 0; padding: 0 0 24px; }
+  #assignmentPage .a-start .go-btn { width: auto; min-width: 160px; padding: 0 24px; }
+  #assignmentPage #aBrief,
+  #assignmentPage:has(.a-strip) #aBrief { grid-column: 1; grid-row: 4; padding: 0 0 24px; }
+  #assignmentPage #aPlan,
+  #assignmentPage:has(.a-strip) #aPlan { grid-column: 1; grid-row: 5; padding: 20px 0; margin: 0; border: 0; border-top: 1px solid var(--detail-line); }
+  #assignmentPage #aOpen,
+  #assignmentPage:has(.a-strip) #aOpen { grid-column: 1; grid-row: 6; border-left: 0; padding: 20px 0; }
+}
+@media (max-width: 540px) {
+  #assignmentPage { padding-inline: 0; }
+  #assignmentPage #aHeader { grid-template-columns: minmax(0,1fr); }
+  #assignmentPage .a-header .a-hand { grid-column: 1; grid-row: auto; justify-self: start; }
+  #assignmentPage .a-title { font-size: 22px; }
+}
+/* Keep the compact navigation vertical on this detail screen. The original
+   900px rule changes page-nav separately from the rail's own direction. */
+@media (max-width: 900px) {
+  body:has(#assignmentPage.active) .page-nav { flex-direction: column; flex: 0 0 auto; }
+  body:has(#assignmentPage.active) .page-btn { flex: 0 0 auto; min-height: 44px; }
+  body:has(#assignmentPage.active) .rail { overflow-x: hidden; overflow-y: auto; }
+  body:has(#assignmentPage.active) .src-empty { display: none; }
+}

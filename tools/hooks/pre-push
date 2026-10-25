@@ -1,0 +1,13 @@
+#!/bin/bash
+# Only release commits (the `public` branch, built by tools/publish.sh) may leave this repo,
+# and only with a clean privacy scan. Turn on with: git config core.hooksPath tools/hooks
+ROOT="$(git rev-parse --show-toplevel)"
+PUBLIC=$(git rev-parse -q --verify refs/heads/public)
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = 0000000000000000000000000000000000000000 ] && continue   # deleting a remote ref
+  if [ -z "$PUBLIC" ] || ! git merge-base --is-ancestor "$local_sha" "$PUBLIC"; then
+    echo "pre-push: $local_ref is not a release commit. Publish with tools/publish.sh." >&2
+    exit 1
+  fi
+done
+python3 "$ROOT/tools/privacy_scan.py" >&2 || { echo "pre-push: privacy scan failed" >&2; exit 1; }

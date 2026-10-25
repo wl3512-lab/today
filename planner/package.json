@@ -1,0 +1,7 @@
+{
+  "name": "today-planner",
+  "private": true,
+  "description": "Today planner: page tests run under jsdom",
+  "scripts": { "test:page": "node tests/planner-week-view.test.cjs" },
+  "devDependencies": { "jsdom": "30.1.1" }
+}

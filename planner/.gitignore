@@ -1,0 +1,15 @@
+.venv/
+.DS_Store
+.superpowers/
+__pycache__/
+state.json
+web/node_modules/
+web/dist/
+.planner-page
+
+# Hand-made backups before risky edits (planner.html.pre-attendance, app.py.pre-guard, ...).
+# They stay on disk for rollback; git history already keeps every version.
+*.pre-*
+
+# old Chrome localStorage carried into the native window (holds the AI token)
+.chrome-localstorage*.json

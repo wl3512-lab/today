@@ -1,0 +1,32 @@
+{
+  "name": "Sam",
+  "fullName": "Sam Rivera",
+  "school": "State University",
+  "timezone": "America/Chicago",
+  "lms": { "kind": "canvas", "host": "canvas.stateu.edu", "sso": "State U sign-in" },
+  "notesUrl": "https://www.notion.so/your-notes-page",
+  "githubWikiName": "",
+  "publicHosts": ["chem.stateu.edu"],
+  "coursesPath": "~/.courses.json",
+  "plugins": [],
+  "features": [],
+  "learner": "a first-year student",
+  "aiProxyUrl": "",
+  "studyWindow": { "start": 10, "end": 22, "classPad": 30, "busyPad": 15, "sessionMin": 60, "maxSessions": 8, "minStepMin": 30 },
+  "quizPrep": {
+    "courses": ["chem101"],
+    "settings": {
+      "chem101": {
+        "subject": "generic",
+        "title": "CHEM 101, General Chemistry",
+        "professor": "Dr. Okafor",
+        "label": "CHEM 101",
+        "fileTag": "chem101",
+        "lessonWord": "Chapter",
+        "noCalculator": false,
+        "quizPoints": 10
+      }
+    }
+  },
+  "launchLabel": "today.planner"
+}

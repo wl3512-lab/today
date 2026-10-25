@@ -1,0 +1,1221 @@
+#!/usr/bin/env python3
+"""bs - Brightspace (D2L) CLI for any school.
+
+Drives the D2L Valence API from inside a logged-in agent-browser session,
+so no API key or admin app registration is needed. Login state (including
+any "remember this device" from the school's sign-in) lives in a persistent
+Chrome profile.
+
+The school's Brightspace address comes from BRIGHTSPACE_HOST, else from
+lms.host in ~/.today/profile.json (TODAY_PROFILE overrides that path).
+"""
+
+import argparse
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
+
+def school_host():
+    """https://<the school's Brightspace>, from the env or the Today profile."""
+    host = os.environ.get("BRIGHTSPACE_HOST", "")
+    if not host:
+        path = os.path.expanduser(os.environ.get("TODAY_PROFILE", "~/.today/profile.json"))
+        try:
+            with open(path) as fh:
+                host = ((json.load(fh).get("lms") or {}).get("host") or "")
+        except (OSError, ValueError):
+            host = ""
+    host = host.strip().rstrip("/")
+    if not host:
+        sys.exit("bs: no Brightspace address. Set lms.host in ~/.today/profile.json "
+                 "(e.g. brightspace.yourschool.edu) or BRIGHTSPACE_HOST.")
+    return host if host.startswith("http") else "https://" + host
+
+
+SESSION = os.environ.get("BRIGHTSPACE_SESSION", "brightspace")
+PROFILE = os.path.expanduser("~/.brightspace-profile")
+HOST = school_host()
+HOME = HOST + "/d2l/home"
+LP = "1.63"   # learning platform API version
+LE = "1.97"   # learning environment API version
+
+
+class AuthError(Exception):
+    pass
+
+
+class BrowserError(Exception):
+    pass
+
+
+# --------------------------------------------------------------------------
+# agent-browser plumbing
+# --------------------------------------------------------------------------
+
+# agent-browser keys its daemon by session, but a call whose flags differ from
+# the running browser TEARS IT DOWN and relaunches. A non-headed poll during
+# login therefore kills the visible window mid-Duo. Once login starts, every
+# call in the process must stay headed.
+HEADED = False
+
+
+# launchd hands a job PATH=/usr/bin:/bin:/usr/sbin:/sbin, which does not
+# include ~/.local/bin where agent-browser is installed. A bare "agent-browser"
+# therefore works in a terminal and raises FileNotFoundError under the
+# scheduler - a traceback, not a BrowserError, so every caller saw a crash
+# instead of a handled failure. Resolve to an absolute path once.
+_AB_PATH = None
+
+
+def agent_browser_bin():
+    global _AB_PATH
+    if _AB_PATH:
+        return _AB_PATH
+    found = shutil.which("agent-browser")
+    if not found:
+        for cand in ("~/.local/bin/agent-browser", "/opt/homebrew/bin/agent-browser",
+                     "/usr/local/bin/agent-browser"):
+            cand = os.path.expanduser(cand)
+            if os.access(cand, os.X_OK):
+                found = cand
+                break
+    if not found:
+        raise BrowserError(
+            "agent-browser not found. Install it, or add its directory to PATH.")
+    _AB_PATH = found
+    return found
+
+
+def _cmd(args, headed=False):
+    cmd = [agent_browser_bin(), "--session", SESSION, "--profile", PROFILE]
+    if HEADED or headed:
+        cmd.append("--headed")
+    return cmd + args
+
+
+def ab(args, headed=False, timeout=180):
+    try:
+        return subprocess.run(_cmd(args, headed), capture_output=True, text=True,
+                              timeout=timeout)
+    except FileNotFoundError as exc:
+        raise BrowserError(str(exc))
+
+
+def current_url():
+    """Current page URL, or "" if it cannot be determined.
+
+    `get url --json` nests the value under data.url, while `eval --json` uses
+    data.result - accept either so a CLI change cannot silently blind us.
+    """
+    p = ab(["get", "url", "--json"], timeout=60)
+    try:
+        data = json.loads(p.stdout).get("data", {})
+        if isinstance(data, str):
+            return data
+        return data.get("url") or data.get("result") or ""
+    except Exception:
+        return ""
+
+
+def ensure_origin(headed=False):
+    """Same-origin fetch requires us to be sitting on a brightspace page."""
+    if current_url().startswith(HOST):
+        return
+    p = ab(["open", HOME], headed=headed, timeout=180)
+    if p.returncode != 0:
+        raise BrowserError(p.stderr.strip() or p.stdout.strip() or "failed to open Brightspace")
+    # A cold-started browser reports about:blank for a moment, so one immediate
+    # read is not evidence of anything. Poll until the URL settles.
+    # Logged out, Brightspace bounces to the school's sign-in - a different origin,
+    # where fetching the Valence API would just hit CORS.
+    for _ in range(12):
+        url = current_url()
+        if url.startswith(HOST):
+            return
+        if "shibboleth" in url or "/d2l/login" in url:
+            raise AuthError()
+        time.sleep(0.5)
+    raise AuthError()
+
+
+JS_PRELUDE = r"""
+const LP = "%s", LE = "%s";
+
+async function api(path) {
+  const r = await fetch(path, {
+    credentials: "include",
+    headers: { "Accept": "application/json" },
+  });
+  // 401 is "not authenticated"; 403 is "not allowed to see this", which is a
+  // normal per-endpoint outcome (students cannot read classlist, say) and must
+  // NOT be mistaken for a dead session or it aborts the whole run.
+  // A genuinely dead session 302s to the SSO login page and returns HTML.
+  if (r.status === 401) throw new Error("AUTH_EXPIRED");
+  if (/\/d2l\/login|shibboleth|\/samlsso|\/idp\/|\/saml2?\//i.test(r.url)) throw new Error("AUTH_EXPIRED");
+  const body = await r.text();
+  if (!r.ok) throw new Error("HTTP_" + r.status + " " + path);
+  if (!body) return null;
+  try {
+    return JSON.parse(body);
+  } catch (e) {
+    if (/<html|<!DOCTYPE/i.test(body)) throw new Error("AUTH_EXPIRED");
+    throw new Error("NONJSON " + path + " :: " + body.slice(0, 120));
+  }
+}
+
+// Valence paginates with an opaque bookmark cursor.
+async function paged(base) {
+  let out = [], bookmark = null;
+  for (let guard = 0; guard < 60; guard++) {
+    let u = base;
+    if (bookmark !== null) u += (u.includes("?") ? "&" : "?") + "bookmark=" + encodeURIComponent(bookmark);
+    const d = await api(u);
+    if (!d) break;
+    if (Array.isArray(d)) return out.concat(d);
+    out = out.concat(d.Items || d.Objects || []);
+    if (d.PagingInfo && d.PagingInfo.HasMoreItems) bookmark = d.PagingInfo.Bookmark;
+    else break;
+  }
+  return out;
+}
+
+// Swallow a single missing endpoint without losing the rest of the course.
+async function soft(fn, dflt) {
+  try { return await fn(); }
+  catch (e) {
+    if (String(e.message) === "AUTH_EXPIRED") throw e;
+    return dflt;
+  }
+}
+
+// Discussions carry real, graded deadlines (reading responses, weekly papers)
+// and live behind a two-step forum -> topics walk, which is why an
+// assignments-and-quizzes-only view silently misses them.
+async function discussionTopics(ouId) {
+  const base = "/d2l/api/le/" + LE + "/" + ouId + "/discussions/forums/";
+  const forums = await soft(function () { return api(base); }, []);
+  const out = [];
+  for (const f of forums || []) {
+    const topics = await soft(function () {
+      return api(base + f.ForumId + "/topics/");
+    }, []);
+    (topics || []).forEach(function (t) {
+      if (t.IsHidden) return;
+      out.push({
+        forum: f.Name, forumId: f.ForumId, id: t.TopicId,
+        name: t.Name, due: t.DueDate, points: t.ScoreOutOf,
+      });
+    });
+  }
+  return out;
+}
+
+// Never let one failing course kill the whole report.
+async function settle(label, fn) {
+  try { return { ok: true, label, value: await fn() }; }
+  catch (e) {
+    if (String(e.message) === "AUTH_EXPIRED") throw e;
+    return { ok: false, label, error: String(e.message) };
+  }
+}
+
+async function activeCourses() {
+  const items = await paged("/d2l/api/lp/" + LP + "/enrollments/myenrollments/?orgUnitTypeId=3");
+  const now = Date.now();
+  return items
+    .filter(function (e) {
+      const a = e.Access || {};
+      if (a.IsActive === false) return false;
+      if (a.EndDate && Date.parse(a.EndDate) < now) return false;
+      return true;
+    })
+    .map(function (e) {
+      // MyOrgUnitInfo.PinDate is non-null exactly when the user pinned the course.
+      return {
+        id: e.OrgUnit.Id, name: e.OrgUnit.Name, code: e.OrgUnit.Code,
+        pinDate: e.PinDate || null,
+      };
+    });
+}
+
+// Pinned only. If NOTHING is pinned we fall back to all active rather than
+// returning an empty list - an empty planner is worse than an unfiltered one.
+async function pinnedCourses() {
+  const all = await activeCourses();
+  const pinned = all.filter(function (c) { return !!c.pinDate; });
+  return pinned.length ? pinned : all;
+}
+
+// Flatten the content tree into topics, keeping the module path for context.
+async function tocTopics(ouId) {
+  const toc = await api("/d2l/api/le/" + LE + "/" + ouId + "/content/toc");
+  const out = [];
+  (function walk(mods, trail) {
+    (mods || []).forEach(function (m) {
+      const path = trail.concat([m.Title || ""]);
+      (m.Topics || []).forEach(function (t) {
+        out.push({
+          id: t.TopicId, title: t.Title || "", url: t.Url || "",
+          type: t.TypeIdentifier || "", path: path.filter(Boolean).join(" / "),
+        });
+      });
+      walk(m.Modules, path);
+    });
+  })((toc && toc.Modules) || [], []);
+  return out;
+}
+
+// Content files are same-origin, so the session cookie fetches them directly.
+// Binary (PDF/DOCX) cannot be read in-page - report the link instead of lying.
+async function topicBody(url) {
+  if (!url) return { kind: "none", note: "no url" };
+  // Professors link three different ways: same-origin HTML, same-origin
+  // binaries (.docx/.pdf), and off-site links (published Google Docs). Only
+  // the first can be read in-page - the others are handed to the CLI, which
+  // has the session cookie and real extraction tools.
+  const absolute = /^https?:\/\//i.test(url);
+  if (absolute && url.indexOf(location.host) < 0) {
+    return { kind: "external", url: url, note: "external" };
+  }
+  try {
+    const r = await fetch(url, { credentials: "include" });
+    const ct = (r.headers.get("content-type") || "").toLowerCase();
+    if (!r.ok) return { kind: "none", note: "HTTP " + r.status, contentType: ct };
+    if (ct.indexOf("html") >= 0 || ct.indexOf("text/") >= 0) {
+      return { kind: "html", text: await r.text(), note: "ok", contentType: ct };
+    }
+    const buf = await r.arrayBuffer();
+    if (buf.byteLength > 6000000) {
+      return { kind: "none", note: "too large (" + buf.byteLength + " bytes)", contentType: ct };
+    }
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return { kind: "binary", b64: btoa(bin), note: "binary", contentType: ct };
+  } catch (e) {
+    return { kind: "none", note: String(e.message) };
+  }
+}
+""" % (LP, LE)
+
+
+def run_js(body, headed=False, timeout=300):
+    ensure_origin(headed=headed)
+    return run_js_raw(body, timeout=timeout)
+
+
+def run_js_raw(body, timeout=300):
+    """Evaluate without ensuring origin - never navigates the page.
+
+    Login polling MUST use this: ensure_origin would re-open the Brightspace
+    home URL every few seconds and yank the user off the Duo prompt mid-login.
+    """
+    script = "(async () => {\n%s\n%s\n})()" % (JS_PRELUDE, body)
+    p = subprocess.run(
+        _cmd(["eval", "--stdin", "--json"]),
+        input=script, capture_output=True, text=True, timeout=timeout,
+    )
+    raw = p.stdout.strip()
+    if not raw:
+        raise BrowserError(p.stderr.strip() or "no output from agent-browser")
+    try:
+        env = json.loads(raw)
+    except json.JSONDecodeError:
+        raise BrowserError(raw[:400])
+    if not env.get("success"):
+        err = json.dumps(env.get("error"))
+        if "AUTH_EXPIRED" in err:
+            raise AuthError()
+        raise BrowserError(err)
+    return env.get("data", {}).get("result")
+
+
+# --------------------------------------------------------------------------
+# helpers
+# --------------------------------------------------------------------------
+
+def parse_dt(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def fmt_due(s):
+    dt = parse_dt(s)
+    if not dt:
+        return "no due date"
+    local = dt.astimezone()
+    delta = local - datetime.now(timezone.utc).astimezone()
+    days = delta.days
+    if delta.total_seconds() < 0:
+        rel = "OVERDUE"
+    elif days == 0:
+        rel = "today"
+    elif days == 1:
+        rel = "tomorrow"
+    else:
+        rel = "in %dd" % days
+    return "%s (%s)" % (local.strftime("%a %b %d, %I:%M%p").replace(" 0", " "), rel)
+
+
+def strip_html(s):
+    if not s:
+        return ""
+    import re
+    # Drop non-content blocks FIRST, or their contents survive tag-stripping and
+    # you get Google's JavaScript in the middle of a syllabus.
+    s = re.sub(r"(?is)<script\b.*?</script>", " ", s)
+    s = re.sub(r"(?is)<style\b.*?</style>", " ", s)
+    s = re.sub(r"(?is)<head\b.*?</head>", " ", s)
+    s = re.sub(r"(?s)<!--.*?-->", " ", s)
+    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
+    s = re.sub(r"</p>", "\n", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", "", s)
+    # html.unescape handles named AND numeric entities (&#160;, &#8217;, ...);
+    # a hand-rolled replace list silently leaks the ones it forgot.
+    import html as _html
+    s = _html.unescape(s)
+    return "\n".join(ln.rstrip() for ln in s.splitlines()).strip()
+
+
+def out(obj, as_json, printer):
+    if as_json:
+        print(json.dumps(obj, indent=2))
+    else:
+        printer(obj)
+
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+def cmd_login(a):
+    global HEADED
+    # A headless daemon may already own this session name from an earlier data
+    # command. --session reuses the RUNNING browser, so --headed would be
+    # ignored and the window would never appear. Close it first.
+    ab(["close"], timeout=60)
+    time.sleep(1)
+    HEADED = True   # every call from here stays headed, or the window dies
+
+    print("Opening Brightspace. Sign in with your school account in the window that appears.")
+    print("(If it offers 'remember this device', tick it so you only do this once.)\n")
+
+    p = ab(["open", HOME], headed=True, timeout=180)
+    if p.returncode != 0:
+        print("Could not open the browser: %s" % (p.stderr.strip() or p.stdout.strip()),
+              file=sys.stderr)
+        return 1
+
+    deadline = time.time() + a.wait
+    while time.time() < deadline:
+        url = current_url()
+        # Only probe once the browser is back on a Brightspace page - and never
+        # navigate, or we would interrupt the login the user is completing.
+        if url.startswith(HOST) and "/d2l/login" not in url:
+            try:
+                me = run_js_raw('return await api("/d2l/api/lp/" + LP + "/users/whoami");')
+                if me and me.get("Identifier"):
+                    print("Logged in as %s %s (%s)" % (
+                        me.get("FirstName", ""), me.get("LastName", ""),
+                        me.get("UniqueName", "")))
+                    # Close cleanly so Chrome flushes cookies to the profile on
+                    # disk; later headless runs restore the session from there.
+                    ab(["close"], timeout=60)
+                    print("Session saved to %s" % PROFILE)
+                    return 0
+            except (AuthError, BrowserError):
+                pass
+        time.sleep(3)
+
+    print("Timed out after %ds waiting for login." % a.wait, file=sys.stderr)
+    return 1
+
+
+def cmd_status(a):
+    try:
+        me = run_js('return await api("/d2l/api/lp/" + LP + "/users/whoami");')
+    except AuthError:
+        print("Not logged in. Run: bs login")
+        return 1
+    print("Logged in as %s %s (%s)" % (
+        me.get("FirstName", ""), me.get("LastName", ""), me.get("UniqueName", "")))
+    return 0
+
+
+def cmd_courses(a):
+    data = run_js("return await %s;" % ("pinnedCourses()" if a.pinned else "activeCourses()"))
+    def show(cs):
+        if not cs:
+            print("No active courses.")
+            return
+        for c in cs:
+            pin = "*" if c.get("pinDate") else " "
+            print("%s%-8s %s" % (pin, c["id"], c["name"]))
+            if c.get("code"):
+                print("         %s" % c["code"])
+    out(data, a.json, show)
+    return 0
+
+
+def cmd_due(a):
+    body = """
+    const days = %d;
+    const horizon = Date.now() + days * 86400000;
+    const courses = %s;
+    const results = await Promise.all(courses.map(function (c) {
+      return settle(c.name, async function () {
+        const items = [];
+        try {
+          const folders = await api("/d2l/api/le/" + LE + "/" + c.id + "/dropbox/folders/");
+          (folders || []).forEach(function (f) {
+            items.push({
+              kind: "assignment", course: c.name, courseId: c.id,
+              name: f.Name, due: f.DueDate,
+              // NOT TotalUsersWithSubmissions: that counts how many students in
+              // the class have submitted, not whether you have. It marked all
+              // seven What Really Matters assignments done, including ones due
+              // in December. A false "done" makes work get skipped, so only the
+              // per-user CompletionStatus is trusted here.
+              submitted: f.CompletionStatus === 1,
+              url: "%s/d2l/lms/dropbox/user/folder_submit_files.d2l?db=" + f.Id + "&ou=" + c.id,
+            });
+          });
+        } catch (e) { if (String(e.message) === "AUTH_EXPIRED") throw e; }
+        try {
+          const discs = await discussionTopics(c.id);
+          (discs || []).forEach(function (t) {
+            items.push({
+              kind: "discussion", course: c.name, courseId: c.id,
+              name: t.name + (t.points ? " (" + t.points + " pts)" : ""),
+              due: t.due, submitted: false,
+              url: "%s/d2l/le/" + c.id + "/discussions/topics/" + t.id + "/View",
+            });
+          });
+        } catch (e) { if (String(e.message) === "AUTH_EXPIRED") throw e; }
+        try {
+          const quizzes = await paged("/d2l/api/le/" + LE + "/" + c.id + "/quizzes/");
+          (quizzes || []).forEach(function (q) {
+            items.push({
+              kind: "quiz", course: c.name, courseId: c.id,
+              name: q.Name, due: q.DueDate, submitted: false,
+              url: "%s/d2l/lms/quizzing/user/quizzes_list.d2l?ou=" + c.id,
+            });
+          });
+        } catch (e) { if (String(e.message) === "AUTH_EXPIRED") throw e; }
+        return items;
+      });
+    }));
+    const all = [], failed = [];
+    results.forEach(function (r) {
+      if (r.ok) all.push.apply(all, r.value);
+      else failed.push({ course: r.label, error: r.error });
+    });
+    const upcoming = all.filter(function (i) {
+      if (!i.due) return false;
+      const t = Date.parse(i.due);
+      return t <= horizon && t >= Date.now() - 7 * 86400000;
+    });
+    upcoming.sort(function (a, b) { return Date.parse(a.due) - Date.parse(b.due); });
+    return { items: upcoming, failed: failed, days: days };
+    """ % (a.days, "await activeCourses()", HOST, HOST, HOST)
+
+    data = run_js(body)
+
+    def show(d):
+        items = d["items"]
+        if not items:
+            print("Nothing due in the next %d days." % d["days"])
+        else:
+            print("Due in the next %d days\n" % d["days"])
+            for i in items:
+                mark = "x" if i.get("submitted") else " "
+                print("[%s] %-11s %s" % (mark, fmt_due(i["due"]), i["name"]))
+                print("     %s - %s" % (i["course"], i["kind"]))
+        for f in d.get("failed", []):
+            print("\n! %s: %s" % (f["course"], f["error"]), file=sys.stderr)
+    out(data, a.json, show)
+    return 0
+
+
+def cmd_grades(a):
+    sel = "[{id:%s}]" % a.course if a.course else "await activeCourses()"
+    body = """
+    const courses = %s;
+    const named = await activeCourses();
+    const results = await Promise.all(courses.map(function (c) {
+      const meta = named.filter(function (n) { return n.id == c.id; })[0] || c;
+      return settle(meta.name || String(c.id), async function () {
+        const vals = await api("/d2l/api/le/" + LE + "/" + c.id + "/grades/values/myGradeValues/");
+        return {
+          course: meta.name || String(c.id), courseId: c.id,
+          grades: (vals || []).map(function (g) {
+            return {
+              name: g.GradeObjectName, displayed: g.DisplayedGrade,
+              points: g.PointsNumerator, outOf: g.PointsDenominator,
+              weighted: g.WeightedNumerator, weightedOutOf: g.WeightedDenominator,
+            };
+          }),
+        };
+      });
+    }));
+    return results;
+    """ % sel
+
+    data = run_js(body)
+
+    def show(rs):
+        for r in rs:
+            if not r["ok"]:
+                print("! %s: %s" % (r["label"], r["error"]), file=sys.stderr)
+                continue
+            v = r["value"]
+            print("\n%s" % v["course"])
+            if not v["grades"]:
+                print("  (no grades posted)")
+            for g in v["grades"]:
+                score = g.get("displayed") or ""
+                if g.get("points") is not None and g.get("outOf"):
+                    score = "%s / %s" % (g["points"], g["outOf"])
+                print("  %-45s %s" % (g["name"][:45], score))
+    out(data, a.json, show)
+    return 0
+
+
+def cmd_announcements(a):
+    sel = "[{id:%s}]" % a.course if a.course else "await activeCourses()"
+    body = """
+    const days = %d;
+    const cutoff = Date.now() - days * 86400000;
+    const courses = %s;
+    const named = await activeCourses();
+    const results = await Promise.all(courses.map(function (c) {
+      const meta = named.filter(function (n) { return n.id == c.id; })[0] || c;
+      return settle(meta.name || String(c.id), async function () {
+        const news = await api("/d2l/api/le/" + LE + "/" + c.id + "/news/");
+        return (news || [])
+          .filter(function (n) { return !n.StartDate || Date.parse(n.StartDate) >= cutoff; })
+          .map(function (n) {
+            return {
+              course: meta.name || String(c.id), courseId: c.id,
+              title: n.Title, date: n.StartDate,
+              body: (n.Body && (n.Body.Html || n.Body.Text)) || "",
+            };
+          });
+      });
+    }));
+    const all = [];
+    results.forEach(function (r) { if (r.ok) all.push.apply(all, r.value); });
+    all.sort(function (a, b) { return Date.parse(b.date || 0) - Date.parse(a.date || 0); });
+    return { items: all, failed: results.filter(function (r) { return !r.ok; }) };
+    """ % (a.days, sel)
+
+    data = run_js(body)
+
+    def show(d):
+        if not d["items"]:
+            print("No announcements in the last %d days." % a.days)
+        for n in d["items"]:
+            when = parse_dt(n.get("date"))
+            stamp = when.astimezone().strftime("%b %d") if when else "?"
+            print("\n[%s] %s" % (stamp, n["title"]))
+            print("  %s" % n["course"])
+            text = strip_html(n.get("body"))
+            if text:
+                for ln in text.splitlines()[:8]:
+                    print("  %s" % ln)
+        for f in d.get("failed", []):
+            print("\n! %s: %s" % (f["label"], f["error"]), file=sys.stderr)
+    out(data, a.json, show)
+    return 0
+
+
+def cmd_content(a):
+    body = """
+    const toc = await api("/d2l/api/le/" + LE + "/%s/content/toc");
+    return toc;
+    """ % a.course
+
+    data = run_js(body)
+
+    def show(toc):
+        def walk(modules, depth=0):
+            for m in modules or []:
+                print("%s%s" % ("  " * depth, m.get("Title", "?")))
+                for t in m.get("Topics", []) or []:
+                    print("%s- %s" % ("  " * (depth + 1), t.get("Title", "?")))
+                walk(m.get("Modules"), depth + 1)
+        walk(toc.get("Modules") if isinstance(toc, dict) else toc)
+    out(data, a.json, show)
+    return 0
+
+
+def cmd_api(a):
+    path = a.path if a.path.startswith("/") else "/" + a.path
+    path = path.replace("{lp}", LP).replace("{le}", LE)
+    data = run_js('return await api(%s);' % json.dumps(path))
+    print(json.dumps(data, indent=2))
+    return 0
+
+
+def cmd_probe(a):
+    """Report which Valence endpoints the school actually exposes to this account."""
+    body = """
+    const courses = await activeCourses();
+    const c = courses[0];
+    if (!c) return { error: "no active courses found" };
+    const paths = [
+      ["whoami",        "/d2l/api/lp/" + LP + "/users/whoami"],
+      ["enrollments",   "/d2l/api/lp/" + LP + "/enrollments/myenrollments/?orgUnitTypeId=3"],
+      ["assignments",   "/d2l/api/le/" + LE + "/" + c.id + "/dropbox/folders/"],
+      ["quizzes",       "/d2l/api/le/" + LE + "/" + c.id + "/quizzes/"],
+      ["grades",        "/d2l/api/le/" + LE + "/" + c.id + "/grades/values/myGradeValues/"],
+      ["announcements", "/d2l/api/le/" + LE + "/" + c.id + "/news/"],
+      ["content_toc",   "/d2l/api/le/" + LE + "/" + c.id + "/content/toc"],
+      ["calendar",      "/d2l/api/le/" + LE + "/" + c.id + "/calendar/events/myEvents/"],
+      ["classlist",     "/d2l/api/le/" + LE + "/" + c.id + "/classlist/"],
+    ];
+    const rows = await Promise.all(paths.map(function (p) {
+      return settle(p[0], function () { return api(p[1]); });
+    }));
+    return {
+      probedCourse: c,
+      results: rows.map(function (r) {
+        let n = null;
+        if (r.ok) {
+          const v = r.value;
+          n = Array.isArray(v) ? v.length : (v && v.Items ? v.Items.length : (v ? 1 : 0));
+        }
+        return { name: r.label, ok: r.ok, count: n, error: r.error || null };
+      }),
+    };
+    """
+    data = run_js(body)
+    if data.get("error"):
+        print(data["error"], file=sys.stderr)
+        return 1
+    print("Probed against: %s (%s)\n" % (data["probedCourse"]["name"], data["probedCourse"]["id"]))
+    for r in data["results"]:
+        if r["ok"]:
+            print("  OK    %-14s %s items" % (r["name"], r["count"]))
+        else:
+            print("  FAIL  %-14s %s" % (r["name"], r["error"]))
+    return 0
+
+
+EXT_BY_TYPE = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/msword": ".doc",
+    "application/pdf": ".pdf",
+    "application/rtf": ".rtf",
+    "text/rtf": ".rtf",
+}
+
+
+def extract_file(path, content_type=""):
+    """Plain text from a local document. textutil covers Office/RTF/HTML;
+    PDFs go through Quartz, which ships with macOS PyObjC."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf" or "pdf" in (content_type or ""):
+        try:
+            from Quartz import PDFDocument
+            from Foundation import NSURL
+            doc = PDFDocument.alloc().initWithURL_(NSURL.fileURLWithPath_(path))
+            return (doc.string() or "").strip() if doc else ""
+        except Exception as exc:
+            return "[could not read PDF: %s]" % exc
+    try:
+        p = subprocess.run(["/usr/bin/textutil", "-convert", "txt", "-stdout", path],
+                           capture_output=True, text=True, timeout=60)
+        if p.returncode == 0:
+            return p.stdout.strip()
+        return "[textutil failed: %s]" % (p.stderr.strip()[:120],)
+    except Exception as exc:
+        return "[extraction failed: %s]" % exc
+
+
+def google_export(url):
+    """Rewrite a published Google URL to its clean export form.
+
+    A published Sheet as CSV beats scraping its rendered HTML table, and it is
+    the difference between a usable course schedule and a wall of markup.
+    """
+    import re
+    m = re.match(r"(https://docs\.google\.com/spreadsheets/d/e/[^/]+)/pubhtml", url)
+    if m:
+        return m.group(1) + "/pub?output=csv", "csv"
+    return url, None
+
+
+def fetch_external(url):
+    """Published Google Docs and similar are public - fetch them directly."""
+    url, mode = google_export(url)
+    try:
+        p = subprocess.run(
+            ["curl", "-sSL", "-m", "45", "--compressed", url],
+            capture_output=True, timeout=60)
+        if p.returncode != 0:
+            return "[fetch failed: %s]" % p.stderr.decode("utf-8", "replace").strip()[:120]
+        raw = p.stdout
+        if mode == "csv":
+            return raw.decode("utf-8", "replace").strip()
+        head = raw[:400].lower()
+        if b"<html" in head or b"<!doctype" in head:
+            text = raw.decode("utf-8", "replace")
+            # Google Docs put the real document inside #contents; using it skips
+            # all the viewer chrome around it.
+            import re
+            m = re.search(r'(?is)<div[^>]+id="contents".*?>(.*)</div>\s*</body>', text)
+            return strip_html(m.group(1) if m else text)
+        # binary (an exported .docx/.pdf): extract via a temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as fh:
+            fh.write(raw)
+            tmp = fh.name
+        try:
+            return extract_file(tmp)
+        finally:
+            os.unlink(tmp)
+    except Exception as exc:
+        return "[fetch failed: %s]" % exc
+
+
+def doc_text(d):
+    """Plain text for one syllabus document, whatever form it arrived in."""
+    kind = d.get("kind")
+    if kind == "html":
+        return strip_html(d.get("html", ""))
+    if kind == "external":
+        return fetch_external(d["url"])
+    if kind == "binary":
+        ext = EXT_BY_TYPE.get((d.get("contentType") or "").split(";")[0].strip(), "")
+        if not ext:
+            ext = os.path.splitext(d.get("url", ""))[1][:6] or ".bin"
+        try:
+            blob = base64.b64decode(d.get("b64", ""))
+        except Exception as exc:
+            return "[bad payload: %s]" % exc
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as fh:
+            fh.write(blob)
+            tmp = fh.name
+        try:
+            return extract_file(tmp, d.get("contentType", ""))
+        finally:
+            os.unlink(tmp)
+    return "[%s]" % d.get("note", "unreadable")
+
+
+def cmd_syllabus(a):
+    """Find and extract syllabus-ish content for the pinned (or given) courses."""
+    if a.course:
+        sel = "[{id:%s}]" % a.course
+    elif a.all:
+        sel = "await activeCourses()"
+    else:
+        sel = "await pinnedCourses()"
+
+    body = r"""
+    const SYL = /syllabus|course\s*info|course\s*overview|course\s*outline|greensheet|start\s*here/i;
+    const courses = %s;
+    const named = await activeCourses();
+    const results = await Promise.all(courses.map(function (c) {
+      const meta = named.filter(function (n) { return n.id == c.id; })[0] || c;
+      return settle(meta.name || String(c.id), async function () {
+        const topics = await tocTopics(c.id);
+        // quickLink/dialog URLs are Brightspace UI pages wrapping an activity,
+        // not documents - extracting them returns page chrome, not content.
+        const readable = topics.filter(function (t) {
+          return t.url && !/quickLink|\/d2l\/common\/dialogs/i.test(t.url);
+        });
+        const hits = readable.filter(function (t) { return SYL.test(t.title) || SYL.test(t.path); });
+        const picked = (hits.length ? hits : readable).slice(0, %d);
+        const docs = [];
+        for (const t of picked) {
+          const b = await topicBody(t.url);
+          docs.push({
+            title: t.title, path: t.path, url: b.url || t.url,
+            kind: b.kind, note: b.note,
+            contentType: b.contentType || null,
+            html: b.text || "", b64: b.b64 || "",
+          });
+        }
+        return {
+          course: meta.name || String(c.id), courseId: c.id,
+          matched: hits.length, totalTopics: topics.length, docs: docs,
+        };
+      });
+    }));
+    return results;
+    """ % (sel, a.limit)
+
+    data = run_js(body, timeout=420)
+
+    def show(rs):
+        for r in rs:
+            if not r["ok"]:
+                print("! %s: %s" % (r["label"], r["error"]), file=sys.stderr)
+                continue
+            v = r["value"]
+            print("\n%s  (%d syllabus-ish of %d topics)" % (
+                v["course"], v["matched"], v["totalTopics"]))
+            for d in v["docs"]:
+                print("  - %s" % d["title"])
+                if d["path"]:
+                    print("    in: %s" % d["path"])
+                url = d.get("url", "")
+                if url and not url.startswith("http"):
+                    url = HOST + url
+                if url:
+                    print("    %s" % url)
+                text = doc_text(d)
+                shown = [ln for ln in text.splitlines() if ln.strip()][:a.lines]
+                for ln in shown:
+                    print("    %s" % ln)
+    out(data, a.json, show)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# normalized feed - the contract the OS layer consumes
+# --------------------------------------------------------------------------
+#
+# Every connector (brightspace, gmail, gcal, ...) emits this same Item shape
+# so the aggregator can merge them without knowing the source. Documented in
+# CONNECTOR.md; keep the two in sync when changing anything here.
+#
+#   id       stable + globally unique, "<source>:<kind>:<scope>:<localId>"
+#   source   connector name
+#   kind     deadline | message | grade | event
+#   title    one line, no markup
+#   body     plain text, may be ""
+#   url      deep link back to the source, or null
+#   at       ISO8601 UTC - the moment that matters (due date, sent date)
+#   context  course / calendar / thread name
+#   status   open | done | overdue | null
+#   meta     source-specific passthrough, never interpreted by the OS
+
+CACHE = os.path.expanduser("~/.brightspace-cache.json")
+SOURCE = "brightspace"
+
+
+def item(kind, scope, local_id, title, at, context,
+         body="", url=None, status=None, meta=None):
+    return {
+        "id": "%s:%s:%s:%s" % (SOURCE, kind, scope, local_id),
+        "source": SOURCE,
+        "kind": kind,
+        "title": title or "",
+        "body": body or "",
+        "url": url,
+        "at": to_utc(at),
+        "context": context or "",
+        "status": status,
+        "meta": meta or {},
+    }
+
+
+def to_utc(s):
+    dt = parse_dt(s)
+    if not dt:
+        return None
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def deadline_status(at, submitted):
+    if submitted:
+        return "done"
+    dt = parse_dt(at)
+    if dt and dt < datetime.now(timezone.utc):
+        return "overdue"
+    return "open"
+
+
+GATHER_JS = r"""
+const courses = await activeCourses();
+const per = await Promise.all(courses.map(function (c) {
+  return settle(c.name, async function () {
+    const base = "/d2l/api/le/" + LE + "/" + c.id;
+    return {
+      course: c,
+      assignments: await soft(function () { return api(base + "/dropbox/folders/"); }, []),
+      quizzes:     await soft(function () { return paged(base + "/quizzes/"); }, []),
+      news:        await soft(function () { return api(base + "/news/"); }, []),
+      discussions: await soft(function () { return discussionTopics(c.id); }, []),
+      content:     await soft(function () { return tocTopics(c.id); }, []),
+      grades:      await soft(function () { return api(base + "/grades/values/myGradeValues/"); }, []),
+    };
+  });
+}));
+return per;
+"""
+
+
+def build_feed():
+    """One browser round-trip -> normalized items for every active course."""
+    per = run_js(GATHER_JS)
+    items, errors = [], []
+
+    for row in per:
+        if not row.get("ok"):
+            errors.append({"context": row.get("label"), "error": row.get("error")})
+            continue
+        v = row["value"]
+        c = v["course"]
+        cid, cname = c["id"], c["name"]
+
+        for f in v.get("assignments") or []:
+            # See the note in the JS above: TotalUsersWithSubmissions is a
+            # class-wide count, never evidence about this student.
+            submitted = f.get("CompletionStatus") == 1
+            items.append(item(
+                "deadline", cid, f.get("Id"),
+                f.get("Name"), f.get("DueDate"), cname,
+                body=strip_html((f.get("CustomInstructions") or {}).get("Html", "")),
+                url="%s/d2l/lms/dropbox/user/folder_submit_files.d2l?db=%s&ou=%s" % (HOST, f.get("Id"), cid),
+                status=deadline_status(f.get("DueDate"), submitted),
+                meta={"type": "assignment", "courseId": cid},
+            ))
+
+        for q in v.get("quizzes") or []:
+            items.append(item(
+                "deadline", cid, "quiz-%s" % q.get("Id"),
+                q.get("Name"), q.get("DueDate"), cname,
+                url="%s/d2l/lms/quizzing/user/quizzes_list.d2l?ou=%s" % (HOST, cid),
+                status=deadline_status(q.get("DueDate"), False),
+                meta={"type": "quiz", "courseId": cid},
+            ))
+
+        for t in v.get("discussions") or []:
+            if not t.get("due"):
+                continue
+            pts = " (%s pts)" % t["points"] if t.get("points") else ""
+            items.append(item(
+                "deadline", cid, "disc-%s" % t.get("id"),
+                (t.get("name") or "") + pts, t.get("due"), cname,
+                url="%s/d2l/le/%s/discussions/topics/%s/View" % (HOST, cid, t.get("id")),
+                status=deadline_status(t.get("due"), False),
+                meta={"type": "discussion", "courseId": cid, "forum": t.get("forum"),
+                      "points": t.get("points")},
+            ))
+
+        for t in v.get("content") or []:
+            if not t.get("title"):
+                continue
+            url = t.get("url") or ""
+            if url and not url.startswith("http"):
+                url = HOST + url
+            items.append(item(
+                "material", cid, t.get("id"),
+                t["title"], None, cname,
+                body=t.get("path", ""),
+                url=url or "%s/d2l/le/content/%s/Home" % (HOST, cid),
+                meta={"type": "content", "courseId": cid, "module": t.get("path", "")},
+            ))
+
+        for n in v.get("news") or []:
+            body = (n.get("Body") or {})
+            items.append(item(
+                "message", cid, n.get("Id"),
+                n.get("Title"), n.get("StartDate"), cname,
+                body=strip_html(body.get("Html") or body.get("Text") or ""),
+                url="%s/d2l/le/news/%s/%s/view" % (HOST, cid, n.get("Id")),
+                meta={"type": "announcement", "courseId": cid},
+            ))
+
+        for g in v.get("grades") or []:
+            obj = g.get("GradeObjectName")
+            score = g.get("DisplayedGrade")
+            if g.get("PointsNumerator") is not None and g.get("PointsDenominator"):
+                score = "%s / %s" % (g["PointsNumerator"], g["PointsDenominator"])
+            if not score:
+                continue
+            items.append(item(
+                "grade", cid, g.get("GradeObjectIdentifier") or obj,
+                "%s: %s" % (obj, score), g.get("LastModified"), cname,
+                url="%s/d2l/lms/grades/my_grades/main.d2l?ou=%s" % (HOST, cid),
+                meta={
+                    "type": "grade", "courseId": cid, "gradeItem": obj, "score": score,
+                    "points": g.get("PointsNumerator"), "outOf": g.get("PointsDenominator"),
+                },
+            ))
+
+    # Newest / soonest first; undated items sink to the bottom.
+    items.sort(key=lambda i: i["at"] or "", reverse=True)
+    return {
+        "source": SOURCE,
+        "fetchedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "stale": False,
+        "items": items,
+        "errors": errors,
+    }
+
+
+def read_cache():
+    try:
+        with open(CACHE) as f:
+            return json.load(f)
+    except (IOError, ValueError):
+        return None
+
+
+def write_cache(feed):
+    tmp = CACHE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(feed, f)
+    os.replace(tmp, CACHE)   # atomic, so a reader never sees a half-written file
+
+
+def cache_age(feed):
+    ts = parse_dt(feed.get("fetchedAt"))
+    if not ts:
+        return None
+    return (datetime.now(timezone.utc) - ts).total_seconds()
+
+
+def cmd_feed(a):
+    """Cache-first so a UI can paint instantly instead of waiting on a browser."""
+    cached = read_cache()
+
+    if a.cached:
+        if not cached:
+            print(json.dumps({"source": SOURCE, "items": [], "errors": [
+                {"context": None, "error": "no cache yet - run: bs sync"}]}, indent=2))
+            return 1
+        age = cache_age(cached)
+        cached["stale"] = age is None or age > a.max_age
+        feed = cached
+    elif cached and not a.refresh and (cache_age(cached) or 1e9) <= a.max_age:
+        feed = cached
+    else:
+        try:
+            feed = build_feed()
+            write_cache(feed)
+        except (AuthError, BrowserError):
+            if cached:                      # serve stale rather than nothing
+                cached["stale"] = True
+                print(json.dumps(cached, indent=2))
+                return 0
+            raise
+
+    items = feed["items"]
+    if a.kind:
+        items = [i for i in items if i["kind"] in a.kind]
+    if a.days is not None:
+        horizon = datetime.now(timezone.utc) + timedelta(days=a.days)
+        floor = datetime.now(timezone.utc) - timedelta(days=a.days)
+        keep = []
+        for i in items:
+            dt = parse_dt(i["at"])
+            if dt and floor <= dt <= horizon:
+                keep.append(i)
+        items = keep
+
+    print(json.dumps(dict(feed, items=items), indent=2))
+    return 0
+
+
+def cmd_sync(a):
+    feed = build_feed()
+    write_cache(feed)
+    by_kind = {}
+    for i in feed["items"]:
+        by_kind[i["kind"]] = by_kind.get(i["kind"], 0) + 1
+    print("Synced %d items -> %s" % (len(feed["items"]), CACHE))
+    for k in sorted(by_kind):
+        print("  %-9s %d" % (k, by_kind[k]))
+    for e in feed["errors"]:
+        print("  ! %s: %s" % (e["context"], e["error"]), file=sys.stderr)
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="bs", description="Brightspace CLI")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("login", help="one-time school sign-in (opens a window)")
+    s.add_argument("--wait", type=int, default=300, help="seconds to wait for login")
+    s.set_defaults(fn=cmd_login)
+
+    s = sub.add_parser("status", help="check whether the session is alive")
+    s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("courses", help="list active courses")
+    s.add_argument("--pinned", action="store_true", help="only courses you pinned")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_courses)
+
+    s = sub.add_parser("syllabus", help="extract syllabus content for pinned courses")
+    s.add_argument("--course", help="org unit id (default: all pinned)")
+    s.add_argument("--all", action="store_true", help="every active course, not just pinned")
+    s.add_argument("--limit", type=int, default=3, help="max documents per course")
+    s.add_argument("--lines", type=int, default=40, help="max text lines shown per document")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_syllabus)
+
+    s = sub.add_parser("due", help="upcoming assignments and quizzes")
+    s.add_argument("--days", type=int, default=14)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_due)
+
+    s = sub.add_parser("grades", help="grades, all courses or one")
+    s.add_argument("--course", help="org unit id")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_grades)
+
+    s = sub.add_parser("announcements", help="recent course announcements")
+    s.add_argument("--course", help="org unit id")
+    s.add_argument("--days", type=int, default=14)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_announcements)
+
+    s = sub.add_parser("content", help="course content table of contents")
+    s.add_argument("course", help="org unit id")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_content)
+
+    s = sub.add_parser("feed", help="normalized JSON feed for the OS layer (cache-first)")
+    s.add_argument("--kind", action="append",
+                   choices=["deadline", "message", "grade", "event"],
+                   help="filter by kind, repeatable")
+    s.add_argument("--days", type=int, help="only items within +/- N days")
+    s.add_argument("--max-age", type=int, default=900,
+                   help="seconds before the cache is refetched (default 900)")
+    s.add_argument("--cached", action="store_true",
+                   help="never hit the network, return cache as-is")
+    s.add_argument("--refresh", action="store_true", help="force a refetch")
+    s.set_defaults(fn=cmd_feed)
+
+    s = sub.add_parser("sync", help="refresh the cache now")
+    s.set_defaults(fn=cmd_sync)
+
+    s = sub.add_parser("probe", help="report which Valence endpoints work for this account")
+    s.set_defaults(fn=cmd_probe)
+
+    s = sub.add_parser("api", help="raw authenticated GET, e.g. bs api /d2l/api/lp/{lp}/users/whoami")
+    s.add_argument("path")
+    s.set_defaults(fn=cmd_api)
+
+    a = p.parse_args()
+    try:
+        return a.fn(a)
+    except AuthError:
+        print("Brightspace session expired. Run: bs login", file=sys.stderr)
+        return 1
+    except BrowserError as e:
+        print("Browser error: %s" % e, file=sys.stderr)
+        return 1
+    except subprocess.TimeoutExpired:
+        print("Timed out talking to the browser.", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

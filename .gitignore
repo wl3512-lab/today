@@ -1,0 +1,17 @@
+node_modules/
+__pycache__/
+.env
+.venv/
+quiz-prep/data/*
+!quiz-prep/data/.gitkeep
+*.pyc
+.DS_Store
+planner/personal/
+quiz-prep/personal/
+.switch-backup/
+planner/state.json
+quiz-prep/data.core-placeholder
+tools/personal/
+# the internship agent is its own repo (setup clones it here, or links an existing clone)
+/internship-agent
+planner/Today.app/

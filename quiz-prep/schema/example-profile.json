@@ -1,0 +1,12 @@
+{
+  "id": "quiz-2026-10-09",
+  "sourcePhoto": "photos/quiz5.jpg",
+  "format": { "title": "Quiz 5", "instructions": "Show all work.", "calculatorAllowed": false, "showWork": true },
+  "length": 1,
+  "topics": "normal distribution, z-scores",
+  "difficulty": "medium",
+  "questions": [
+    { "number": 1, "type": "show_work", "points": 3, "text": "Scores are normal with mean 75, SD 12. Find P(63 < X < 87).", "parts": [] }
+  ],
+  "totalPoints": 3
+}

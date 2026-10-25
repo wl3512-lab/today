@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quiz Prep</title>
+  <meta name="theme-color" content="#0f1e45">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&family=Figtree:wght@400;500;600;700&family=Caveat:wght@600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header>
+    <div class="brand"><h1>Quiz Prep</h1><span class="brand-note" id="brand-note"></span></div>
+    <nav role="tablist">
+      <button role="tab" data-tab="kit" aria-selected="true">Study Kit</button>
+      <button role="tab" data-tab="exam" aria-selected="false">Exam</button>
+      <button role="tab" data-tab="upload" aria-selected="false">Upload Quiz</button>
+      <button role="tab" data-tab="practice" aria-selected="false">Practice Quiz</button>
+      <button role="tab" data-tab="scores" aria-selected="false">Score Log</button>
+    </nav>
+  </header>
+  <main id="main">
+    <section id="kit" role="tabpanel">
+      <p id="kit-mode" class="mode-note" hidden></p>
+
+      <!-- Study Kit pages: one shows at a time (#kit, #kit/quiz/<section>, #kit/lesson, #kit/settings, #kit/math) -->
+      <div class="kit-page" data-page="home">
+        <button type="button" class="resume" id="resume" hidden></button>
+        <div class="doors">
+          <article class="door door-quiz">
+            <p class="door-kicker">This week's quiz</p>
+            <div id="kit-head" aria-live="polite"><p>Loading your next quiz…</p></div>
+            <div id="ready"></div>
+            <nav class="door-links" id="quiz-links" aria-label="Quiz study pages" hidden>
+              <button type="button" data-go="quiz/plan">Plan</button>
+              <button type="button" data-go="quiz/review">Review</button>
+              <button type="button" data-go="quiz/symbols">Symbols</button>
+              <button type="button" data-go="quiz/cards">Flashcards</button>
+              <button type="button" data-go="quiz/sheet">Worksheet</button>
+              <button type="button" data-go="quiz/test">Practice test</button>
+            </nav>
+            <p id="quiz-empty" class="door-empty" hidden>No study kit for this quiz yet. <button type="button" class="primary" data-go="settings">Build it</button></p>
+          </article>
+          <article class="door door-lesson">
+            <p class="door-kicker">New lesson</p>
+            <div id="lesson-door"><p class="muted">Looking for your newest slides…</p></div>
+          </article>
+        </div>
+        <p class="home-links small"><button type="button" class="link" data-go="settings">⚙ Build settings</button>
+          · <button type="button" class="link" data-go="saved">📚 Saved kits</button>
+          <span class="no-embed"> · <button type="button" class="link" data-go="math">📊 Math at a glance</button></span>
+          · 📱 <a href="https://claude.ai/artifact/SnS4kqwBvXehFy9dbaiCTY" target="_blank" rel="noopener">Quiz 6 on the go</a></p>
+      </div>
+
+      <div class="kit-page" data-page="quiz" hidden>
+        <header class="page-head"><button type="button" class="back" data-go="home">← Study Kit</button><h2 id="quiz-title">Plan</h2></header>
+        <div id="guide-bar" class="guide-bar" aria-live="polite" hidden></div>
+        <p id="quiz-none" class="card" hidden>No study kit for this quiz yet. <button type="button" class="primary" data-go="settings">Build it</button></p>
+        <div id="kit-body" hidden>
+          <nav class="subtabs" aria-label="Study kit sections">
+            <button type="button" data-sub="plan" aria-pressed="true">Plan</button>
+            <button type="button" data-sub="review" aria-pressed="false">Review</button>
+            <button type="button" data-sub="symbols" aria-pressed="false">Symbols &amp; formulas</button>
+            <button type="button" data-sub="cards" aria-pressed="false">Flashcards</button>
+            <button type="button" data-sub="sheet" aria-pressed="false">Worksheet</button>
+            <button type="button" data-sub="test" aria-pressed="false">Practice test</button>
+          </nav>
+          <div data-pane="plan"></div>
+          <div data-pane="review" hidden></div>
+          <div data-pane="symbols" hidden></div>
+          <div data-pane="cards" hidden></div>
+          <div data-pane="sheet" hidden></div>
+          <div data-pane="test" hidden><p>Your practice test copies your real quiz's layout. <button type="button" class="primary" id="go-test">Open practice test</button></p></div>
+          <p class="page-next"><button type="button" class="primary" id="quiz-next">Next →</button></p>
+        </div>
+      </div>
+
+      <div class="kit-page" data-page="lesson" hidden>
+        <header class="page-head"><button type="button" class="back" data-go="home">← Study Kit</button><h2>New lesson</h2>
+          <label class="lesson-pick">Lesson <select id="lesson-pick"></select></label></header>
+        <div id="lesson-body"></div>
+      </div>
+
+      <div class="kit-page" data-page="settings" hidden>
+        <header class="page-head"><button type="button" class="back" data-go="home">← Study Kit</button><h2>Build settings</h2>
+          <label class="lesson-pick">Build a kit for <select id="kit-quiz"></select></label></header>
+        <div id="kit-mats" class="card"></div>
+        <p id="kit-lesson-warn" class="warn" role="alert" hidden></p>
+        <p><button type="button" id="kit-btn" class="primary">Build study kit</button>
+          <span id="kit-status" class="muted" aria-live="polite"></span></p>
+        <p id="kit-error" class="error" role="alert"></p>
+      </div>
+
+      <div class="kit-page" data-page="saved" hidden>
+        <header class="page-head"><button type="button" class="back" data-go="home">← Study Kit</button><h2>Saved kits</h2></header>
+        <p class="muted small">Every kit you've built, newest first. Rebuilding keeps the old version here, worksheets included.</p>
+        <div id="saved-list"><p class="muted">Loading…</p></div>
+      </div>
+
+      <div class="kit-page" data-page="math" hidden>
+        <header class="page-head"><button type="button" class="back" data-go="home">← Study Kit</button><h2>Math at a glance</h2></header>
+        <div id="math-overview" class="card" hidden></div>
+      </div>
+    </section>
+    <section id="exam" role="tabpanel" hidden>
+      <div id="exam-head" class="card" aria-live="polite"><p class="muted">Loading your next exam…</p></div>
+      <div class="card">
+        <div class="row-between"><h3>Your skill by lesson</h3><span class="muted small">Updates as you do checks, worksheets and quizzes</span></div>
+        <div id="skill-list"></div>
+      </div>
+      <div id="skill-check" hidden></div>
+      <div class="card">
+        <div class="row-between"><h3>Study schedule</h3>
+          <label class="inline small">Minutes a day
+            <select id="exam-minutes"><option>30</option><option selected>45</option><option>60</option><option>90</option></select></label></div>
+        <p class="muted small">Weakest lessons first, then mixed review, then full practice exams in the last days. Rebuilds itself when your skill changes.</p>
+        <div id="exam-plan"></div>
+      </div>
+      <p><button type="button" id="exam-kit-btn" class="primary">Build exam study kit</button>
+        <span id="exam-kit-status" class="muted" aria-live="polite"></span></p>
+    </section>
+    <section id="upload" role="tabpanel" hidden>
+      <h2>Upload Quiz</h2>
+      <label class="file-label">
+        Choose quiz photos (JPG or PNG, one per page)
+        <input type="file" id="photo-input" accept="image/jpeg,image/png" multiple>
+      </label>
+      <p id="upload-error" class="error" role="alert" aria-live="polite"></p>
+      <p><button type="button" id="use-saved" class="secondary">Or use photos already in data/photos</button></p>
+      <div id="preview" class="preview"></div>
+      <p><button type="button" id="extract-btn" class="primary" disabled>Extract quiz</button>
+        <span id="extract-status" class="muted" aria-live="polite"></span></p>
+      <form id="profile-form" hidden>
+        <h3>Check and fix what the AI read</h3>
+        <div class="row">
+          <label>Title <input name="title"></label>
+          <label>Difficulty <select name="difficulty"><option>easy</option><option>medium</option><option>hard</option></select></label>
+        </div>
+        <label>Instructions <input name="instructions"></label>
+        <label>Topics <input name="topics"></label>
+        <div class="row">
+          <label class="check"><input type="checkbox" name="showWork"> Show work required</label>
+          <label class="check"><input type="checkbox" name="calculatorAllowed"> Calculator allowed</label>
+        </div>
+        <div id="q-list"></div>
+        <p><button type="submit" class="primary">Save profile</button>
+          <span id="save-status" class="muted" aria-live="polite"></span></p>
+      </form>
+    </section>
+    <section id="practice" role="tabpanel" hidden>
+      <h2>Practice Quiz</h2>
+      <div id="next-quiz" class="card" aria-live="polite"><p>Loading your quiz schedule…</p></div>
+      <div class="card">
+        <label>Copy the format of <select id="profile-select"></select></label>
+        <fieldset class="slides">
+          <legend>Lesson slides to use (makes questions match your class)</legend>
+          <div id="slide-list" class="muted">None added yet.</div>
+          <label class="file-label">Add a slides PDF (download it from the Brightspace link above)
+            <input type="file" id="slide-input" accept="application/pdf"></label>
+          <span id="slide-status" class="muted" aria-live="polite"></span>
+        </fieldset>
+        <label>Topics <textarea id="topics" rows="2" placeholder="e.g. hypothesis testing, p-values, correlation"></textarea></label>
+        <p><button type="button" id="gen-btn" class="primary">Generate practice quiz</button>
+          <span id="gen-status" class="muted" aria-live="polite"></span></p>
+        <p id="gen-error" class="error" role="alert"></p>
+      </div>
+      <div id="practice-out" hidden>
+        <p class="no-print"><button type="button" id="answers-btn" class="secondary" aria-pressed="false">Show answers</button>
+          <button type="button" id="print-btn" class="secondary">Print</button></p>
+        <article id="practice-quiz" class="paper"></article>
+      </div>
+    </section>
+    <section id="scores" role="tabpanel" hidden>
+      <h2>Score Log</h2>
+      <div id="bs-scores" class="card"><p class="muted">Loading your grades from Today planner…</p></div>
+      <details><summary>Add a score Brightspace doesn't have yet</summary>
+      <form id="score-form" class="card">
+        <div class="row">
+          <label>Date <input type="date" name="date" required></label>
+          <label>Quiz <input name="quiz" placeholder="Quiz 6"></label>
+          <label>Score <input type="number" name="score" min="0" step="0.5" required inputmode="decimal"></label>
+          <label>Out of <input type="number" name="outOf" min="1" step="0.5" value="10" required inputmode="decimal"></label>
+        </div>
+        <p><button type="submit" class="primary">Add score</button> <span id="score-error" class="error" role="alert"></span></p>
+      </form></details>
+      <div id="score-chart"></div>
+      <table id="score-table"><thead><tr><th>Date</th><th>Quiz</th><th>Score</th><th>%</th><th><span class="sr-only">Remove</span></th></tr></thead><tbody></tbody></table>
+    </section>
+  </main>
+  <!-- Ask chatbot: bottom-right on every tab; it reads whatever page is on screen -->
+  <button type="button" id="ask-open" class="ask-fab no-print" aria-expanded="false" aria-controls="ask-panel">💬 Ask</button>
+  <section id="ask-panel" class="ask-panel no-print" role="dialog" aria-labelledby="ask-title" hidden>
+    <header><div><strong id="ask-title">Ask about this page</strong><p class="muted small" id="ask-where">Looking at: Study Kit</p></div>
+      <button type="button" class="ask-close" id="ask-close" aria-label="Close the chat">×</button></header>
+    <div class="ask-log" id="ask-log" aria-live="polite"></div>
+    <div class="ask-quick" id="ask-quick">
+      <button type="button">Explain this more simply</button><button type="button">Why this step?</button><button type="button">Give me a similar problem</button>
+    </div>
+    <form id="ask-form"><textarea id="ask-input" rows="2" placeholder="Ask anything about what's on screen…" aria-label="Your question"></textarea>
+      <button type="submit" class="primary">Send</button></form>
+  </section>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="ready.js"></script>
+  <script src="diagrams.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""canvas - Canvas LMS CLI, the Canvas twin of ../brightspace/bs.
+
+Canvas gives every student a personal access token (Account -> Settings ->
+New Access Token), so this talks to the official REST API with plain HTTPS:
+no browser, no admin app. Output follows the Item contract in
+../CONNECTOR.md, so study_sync reads it exactly like the Brightspace feed.
+
+The school's Canvas address comes from CANVAS_HOST, else lms.host in
+~/.today/profile.json (TODAY_PROFILE overrides that path). The token comes
+from CANVAS_TOKEN, else ~/.today/canvas-token (written by `canvas login`,
+readable only by you).
+
+    canvas login                 paste a token once; it is checked, then saved
+    canvas status                is the token still good?
+    canvas feed [--max-age S] [--cached] [--refresh] [--kind deadline] [--days N]
+    canvas sync                  refresh the cache now
+"""
+
+import argparse
+import getpass
+import html
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+SOURCE = "canvas"
+TODAY_DIR = os.path.expanduser("~/.today")
+TOKEN_FILE = os.path.join(TODAY_DIR, "canvas-token")
+CACHE = os.path.expanduser("~/.canvas-cache.json")
+ANNOUNCEMENT_DAYS = 21      # how far back announcements reach
+TIMEOUT = 30
+
+
+class AuthError(Exception):
+    pass
+
+
+def profile():
+    path = os.path.expanduser(os.environ.get("TODAY_PROFILE", "~/.today/profile.json"))
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def school_host():
+    host = os.environ.get("CANVAS_HOST") or ((profile().get("lms") or {}).get("host") or "")
+    host = host.strip().rstrip("/")
+    if not host:
+        sys.exit("canvas: no Canvas address. Set lms.host in ~/.today/profile.json "
+                 "(e.g. canvas.yourschool.edu) or CANVAS_HOST.")
+    return host if host.startswith("http") else "https://" + host
+
+
+def read_token():
+    tok = os.environ.get("CANVAS_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        with open(TOKEN_FILE) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+# --------------------------------------------------------------------------
+# HTTP
+# --------------------------------------------------------------------------
+
+def _next_link(header):
+    """Canvas paginates with Link: <...>; rel="next"."""
+    for part in (header or "").split(","):
+        m = re.match(r'\s*<([^>]+)>;\s*rel="next"', part)
+        if m:
+            return m.group(1)
+    return None
+
+
+def http_get(host, token, path, params=None):
+    """Every page of a GET, joined. Raises AuthError on 401."""
+    url = path if path.startswith("http") else host + path
+    if params:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params, doseq=True)
+    out = []
+    while url:
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token,
+                                                   "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                data = json.loads(r.read().decode("utf-8"))
+                url = _next_link(r.headers.get("Link"))
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                raise AuthError("Canvas token rejected - run: canvas login")
+            raise
+        if not isinstance(data, list):
+            return data
+        out.extend(data)
+    return out
+
+
+# --------------------------------------------------------------------------
+# normalizing
+# --------------------------------------------------------------------------
+
+def strip_html(s):
+    s = re.sub(r"(?is)<(script|style).*?</\1>", " ", s or "")
+    s = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</div>", "\n", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = html.unescape(s)
+    return re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n+", "\n\n", s)).strip()
+
+
+def parse_dt(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def to_utc(s):
+    dt = parse_dt(s)
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def item(kind, scope, local_id, title, at, context, body="", url=None, status=None, meta=None):
+    return {
+        "id": "%s:%s:%s:%s" % (SOURCE, kind, scope, local_id),
+        "source": SOURCE,
+        "kind": kind,
+        "title": title or "",
+        "body": body or "",
+        "url": url,
+        "at": to_utc(at),
+        "context": context or "",
+        "status": status,
+        "meta": meta or {},
+    }
+
+
+def deadline_status(due, submission, now=None):
+    state = (submission or {}).get("workflow_state")
+    if state in ("submitted", "graded", "pending_review") or (submission or {}).get("submitted_at"):
+        return "done"
+    dt = parse_dt(due)
+    if dt and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if dt and dt < (now or datetime.now(timezone.utc)):
+        return "overdue"
+    return "open"
+
+
+def assignment_type(a):
+    types = a.get("submission_types") or []
+    if a.get("is_quiz_assignment") or "online_quiz" in types:
+        return "quiz"
+    if "discussion_topic" in types:
+        return "discussion"
+    return "assignment"
+
+
+def build_feed(get, now=None):
+    """get(path, params) -> parsed JSON. One pass over every active course."""
+    now = now or datetime.now(timezone.utc)
+    items, errors = [], []
+    courses = get("/api/v1/courses", {"enrollment_state": "active", "per_page": 100,
+                                      "include[]": ["total_scores"]})
+    courses = [c for c in courses or [] if isinstance(c, dict) and c.get("id") and c.get("name")]
+
+    for c in courses:
+        cid, cname = c["id"], c["name"]
+        try:
+            assignments = get("/api/v1/courses/%s/assignments" % cid,
+                              {"per_page": 100, "include[]": ["submission"], "order_by": "due_at"})
+        except AuthError:
+            raise
+        except Exception as e:                 # one locked course must not sink the rest
+            errors.append({"context": cname, "error": "assignments: %s" % e})
+            assignments = []
+        for a in assignments or []:
+            sub = a.get("submission") or {}
+            kind_of = assignment_type(a)
+            pts = a.get("points_possible")
+            if a.get("due_at"):
+                items.append(item(
+                    "deadline", cid, a.get("id"), a.get("name"), a.get("due_at"), cname,
+                    body=strip_html(a.get("description") or ""),
+                    url=a.get("html_url"),
+                    status=deadline_status(a.get("due_at"), sub, now),
+                    meta={"type": kind_of, "courseId": cid, "points": pts},
+                ))
+            if sub.get("score") is not None and pts:
+                items.append(item(
+                    "grade", cid, a.get("id"),
+                    "%s: %s / %s" % (a.get("name"), sub["score"], pts),
+                    sub.get("graded_at") or sub.get("submitted_at"), cname,
+                    url=a.get("html_url"),
+                    meta={"type": "grade", "courseId": cid, "gradeItem": a.get("name"),
+                          "score": "%s / %s" % (sub["score"], pts),
+                          "points": sub["score"], "outOf": pts},
+                ))
+
+        for e in c.get("enrollments") or []:
+            score = e.get("computed_current_score")
+            if score is not None:
+                items.append(item(
+                    "grade", cid, "total", "Current total: %s%%" % score, None, cname,
+                    url=c.get("html_url"),
+                    meta={"type": "grade", "courseId": cid, "gradeItem": "Current total",
+                          "score": "%s%%" % score, "points": score, "outOf": 100, "total": True},
+                ))
+                break
+
+        try:
+            modules = get("/api/v1/courses/%s/modules" % cid, {"per_page": 50, "include[]": ["items"]})
+        except AuthError:
+            raise
+        except Exception:
+            modules = []                        # modules are often hidden; not worth an error
+        for m in modules or []:
+            for it in m.get("items") or []:
+                if it.get("type") in ("SubHeader",) or not it.get("title"):
+                    continue
+                items.append(item(
+                    "material", cid, it.get("id"), it.get("title"), None, cname,
+                    body=m.get("name", ""), url=it.get("html_url") or it.get("external_url"),
+                    meta={"type": "content", "courseId": cid, "module": m.get("name", "")},
+                ))
+
+    if courses:
+        try:
+            news = get("/api/v1/announcements", {
+                "context_codes[]": ["course_%s" % c["id"] for c in courses],
+                "start_date": (now - timedelta(days=ANNOUNCEMENT_DAYS)).date().isoformat(),
+                "end_date": (now + timedelta(days=1)).date().isoformat(),
+                "per_page": 50})
+        except AuthError:
+            raise
+        except Exception as e:
+            errors.append({"context": None, "error": "announcements: %s" % e})
+            news = []
+        names = {"course_%s" % c["id"]: (c["id"], c["name"]) for c in courses}
+        for n in news or []:
+            cid, cname = names.get(n.get("context_code"), (None, ""))
+            if cid is None:
+                continue
+            items.append(item(
+                "message", cid, n.get("id"), n.get("title"), n.get("posted_at"), cname,
+                body=strip_html(n.get("message") or ""), url=n.get("html_url"),
+                meta={"type": "announcement", "courseId": cid},
+            ))
+
+    items.sort(key=lambda i: i["at"] or "", reverse=True)
+    return {"source": SOURCE,
+            "fetchedAt": now.isoformat().replace("+00:00", "Z"),
+            "stale": False, "items": items, "errors": errors}
+
+
+# --------------------------------------------------------------------------
+# cache
+# --------------------------------------------------------------------------
+
+def read_cache():
+    try:
+        with open(CACHE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def write_cache(feed):
+    tmp = CACHE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(feed, f)
+    os.replace(tmp, CACHE)
+
+
+def cache_age(feed):
+    ts = parse_dt((feed or {}).get("fetchedAt"))
+    return (datetime.now(timezone.utc) - ts).total_seconds() if ts else None
+
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+def live_get():
+    host, token = school_host(), read_token()
+    if not token:
+        raise AuthError("no Canvas token yet - run: canvas login")
+    return lambda path, params=None: http_get(host, token, path, params)
+
+
+def cmd_login(a):
+    host = school_host()
+    print("Make a token in Canvas: %s/profile/settings -> Approved Integrations -> "
+          "+ New Access Token (any purpose, leave the expiry empty or pick the end of term)." % host)
+    tok = getpass.getpass("Paste the token (it stays on this Mac): ").strip()
+    if not tok:
+        print("No token given.")
+        return 1
+    try:
+        me = http_get(host, tok, "/api/v1/users/self")
+    except AuthError:
+        print("Canvas said no to that token. Make a new one and try again.")
+        return 1
+    os.makedirs(TODAY_DIR, exist_ok=True)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(tok)
+    print("Signed in as %s. Token saved to %s." % (me.get("name", "you"), TOKEN_FILE))
+    return 0
+
+
+def cmd_status(a):
+    try:
+        me = live_get()("/api/v1/users/self")
+    except AuthError as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        return 1
+    print(json.dumps({"ok": True, "user": me.get("name"), "host": school_host()}))
+    return 0
+
+
+def cmd_sync(a):
+    feed = build_feed(live_get())
+    write_cache(feed)
+    print("Synced %d items -> %s" % (len(feed["items"]), CACHE))
+    return 0
+
+
+def cmd_feed(a):
+    """Cache-first, and stale cache rather than nothing - same as bs feed."""
+    cached = read_cache()
+    if a.cached:
+        if not cached:
+            print(json.dumps({"source": SOURCE, "items": [], "errors": [
+                {"context": None, "error": "no cache yet - run: canvas sync"}]}, indent=2))
+            return 1
+        age = cache_age(cached)
+        cached["stale"] = age is None or age > a.max_age
+        feed = cached
+    elif cached and not a.refresh and (cache_age(cached) or 1e9) <= a.max_age:
+        feed = cached
+    else:
+        try:
+            feed = build_feed(live_get())
+            write_cache(feed)
+        except (AuthError, OSError, urllib.error.URLError):
+            if cached:
+                cached["stale"] = True
+                print(json.dumps(cached, indent=2))
+                return 0
+            raise
+
+    items = feed["items"]
+    if a.kind:
+        items = [i for i in items if i["kind"] in a.kind]
+    if a.days is not None:
+        now = datetime.now(timezone.utc)
+        lo, hi = now - timedelta(days=a.days), now + timedelta(days=a.days)
+        items = [i for i in items if parse_dt(i["at"]) and lo <= parse_dt(i["at"]) <= hi]
+    print(json.dumps(dict(feed, items=items), indent=2))
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="canvas", description="Canvas LMS CLI")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("login", help="save a personal access token").set_defaults(fn=cmd_login)
+    sub.add_parser("status", help="check the token").set_defaults(fn=cmd_status)
+    sub.add_parser("sync", help="refresh the cache").set_defaults(fn=cmd_sync)
+    s = sub.add_parser("feed", help="normalized items (cache-first)")
+    s.add_argument("--max-age", type=int, default=900, help="seconds a cache stays fresh")
+    s.add_argument("--cached", action="store_true", help="never hit the network")
+    s.add_argument("--refresh", action="store_true", help="ignore a fresh cache")
+    s.add_argument("--kind", action="append", help="deadline|message|grade|material")
+    s.add_argument("--days", type=int, help="only items within N days of now")
+    s.set_defaults(fn=cmd_feed)
+    a = p.parse_args(argv)
+    try:
+        return a.fn(a)
+    except AuthError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

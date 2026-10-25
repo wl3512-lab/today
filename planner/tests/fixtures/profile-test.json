@@ -1,0 +1,7 @@
+{
+  "name": "Test Student", "fullName": "Test Student", "school": "Example University",
+  "lms": {"kind": "brightspace", "host": "brightspace.example.edu", "sso": "Example sign-in"},
+  "notesUrl": "https://notes.example.com/fall", "discordName": "tester1", "githubWikiName": "tester",
+  "publicHosts": ["profsite.example.org"], "plugins": [],
+  "quizPrep": {"courses": ["math101"]}
+}

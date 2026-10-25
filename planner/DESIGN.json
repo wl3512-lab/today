@@ -1,0 +1,224 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-06T20:00:00Z",
+  "title": "Design System: Today",
+  "extensions": {
+    "colorMeta": {
+      "bg": {
+        "role": "neutral",
+        "displayName": "Ground",
+        "canonical": "oklch(0.972 0.006 95)",
+        "tonalRamp": [
+          "oklch(0.175 0.012 285)",
+          "oklch(0.243 0.01 285)",
+          "oklch(0.4 0.012 285)",
+          "oklch(0.55 0.01 95)",
+          "oklch(0.72 0.008 95)",
+          "oklch(0.88 0.007 95)",
+          "oklch(0.972 0.006 95)",
+          "oklch(0.995 0.003 95)"
+        ]
+      },
+      "field": {
+        "role": "neutral",
+        "displayName": "Field",
+        "canonical": "oklch(0.944 0.005 95)",
+        "tonalRamp": [
+          "oklch(0.18 0.008 285)",
+          "oklch(0.243 0.01 285)",
+          "oklch(0.36 0.008 285)",
+          "oklch(0.52 0.006 95)",
+          "oklch(0.7 0.005 95)",
+          "oklch(0.86 0.005 95)",
+          "oklch(0.944 0.005 95)",
+          "oklch(0.985 0.004 95)"
+        ]
+      },
+      "ink": {
+        "role": "primary",
+        "displayName": "Ink",
+        "canonical": "oklch(0.24 0.02 285)",
+        "tonalRamp": [
+          "oklch(0.16 0.012 285)",
+          "oklch(0.24 0.02 285)",
+          "oklch(0.34 0.02 285)",
+          "oklch(0.44 0.02 285)",
+          "oklch(0.52 0.018 285)",
+          "oklch(0.68 0.015 285)",
+          "oklch(0.84 0.01 285)",
+          "oklch(0.955 0.006 95)"
+        ]
+      },
+      "win": {
+        "role": "secondary",
+        "displayName": "Win Green",
+        "canonical": "oklch(0.5 0.135 155)",
+        "tonalRamp": [
+          "oklch(0.2 0.06 155)",
+          "oklch(0.29 0.09 155)",
+          "oklch(0.4 0.12 155)",
+          "oklch(0.5 0.135 155)",
+          "oklch(0.63 0.14 155)",
+          "oklch(0.775 0.145 155)",
+          "oklch(0.88 0.08 155)",
+          "oklch(0.95 0.04 155)"
+        ]
+      },
+      "urge": {
+        "role": "secondary",
+        "displayName": "Slip Red",
+        "canonical": "oklch(0.55 0.195 22)",
+        "tonalRamp": [
+          "oklch(0.21 0.09 22)",
+          "oklch(0.31 0.13 22)",
+          "oklch(0.43 0.17 22)",
+          "oklch(0.55 0.195 22)",
+          "oklch(0.68 0.17 22)",
+          "oklch(0.735 0.155 25)",
+          "oklch(0.9 0.06 22)",
+          "oklch(0.95 0.035 20)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "The one thing and class names. 1.75rem, 700, tracked tight."
+      },
+      "heading": {
+        "displayName": "Section heading",
+        "purpose": "Every section title: 1.25rem sentence case, never an uppercase micro-label."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Every row, task, jot and anchor at 1rem so blocks stay readable at arm's length."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "press",
+        "value": "120ms ease-out, scale(0.97-0.99)",
+        "purpose": "Every block acknowledges a press. The only universal motion."
+      },
+      {
+        "name": "state-fill",
+        "value": "150-160ms ease-out",
+        "purpose": "Background and colour transitions when a control changes state (checked, picked, active)."
+      },
+      {
+        "name": "ring-colour-journey",
+        "value": "var(--session-ms) linear",
+        "purpose": "@property --ring-stroke travels across a session: rose to green riding out a craving, violet to amber across a study block."
+      },
+      {
+        "name": "list-item-in",
+        "value": "200ms ease-out",
+        "purpose": "New blocks fade up 5px."
+      },
+      {
+        "name": "focus-takeover",
+        "value": "700ms ease-out opacity/filter",
+        "purpose": "Starting a timer promotes the running section to the whole stage and drops everything else to 12-30%. Built on :has(), so it degrades to no change."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "fold",
+        "value": "900px",
+        "purpose": "Every field goes full width; the rail lies down into a top bar of nav buttons."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Section Field",
+      "kind": "container",
+      "refersTo": "section",
+      "description": "A section is a neutral field holding a 20px heading and its controls. Sections are told apart by heading and position, never by hue.",
+      "html": "<section class=\"ds-field ds-win\"><h2 class=\"ds-heading\">Small wins</h2></section>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 9px; padding: 12px 13px 13px; border-radius: 20px; background: oklch(0.944 0.005 95); } .ds-heading { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.02em; margin: 0; }"
+    },
+    {
+      "name": "State Block",
+      "kind": "toggle",
+      "refersTo": "check-row",
+      "description": "A checklist row is the button. Tapping anywhere fills the whole block with the win mark and knocks the label out; the state is the object, not a tick beside it.",
+      "html": "<div class=\"ds-block\"><input type=\"checkbox\" id=\"c1\"><label for=\"c1\">Took meds</label></div>",
+      "css": ".ds-block { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 8px 13px; border-radius: 14px; background: oklch(0.995 0.003 95); cursor: pointer; transition: background-color 160ms cubic-bezier(0.22,1,0.36,1); } .ds-block:has(input:checked) { background: var(--mark); } .ds-block:has(input:checked) label { color: oklch(0.99 0.004 95); }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary buttons are filled ink. The only coloured buttons in the product are the craving pair: green for the win, red for the slip.",
+      "html": "<button class=\"ds-primary\">Add</button>",
+      "css": ".ds-primary { min-height: 44px; min-width: 44px; padding: 0 16px; border: none; border-radius: 14px; background: oklch(0.24 0.02 285); color: oklch(0.99 0.004 95); font-size: 1rem; font-weight: 700; cursor: pointer; } .ds-primary.win { background: oklch(0.5 0.135 155); } .ds-primary.slip { background: oklch(0.55 0.195 22); }"
+    },
+    {
+      "name": "Chip",
+      "kind": "badge",
+      "refersTo": "chip",
+      "description": "Times, dates and counts on a neutral ink wash. They turn red only when the thing is due or overdue, green only when a count is complete.",
+      "html": "<span class=\"ds-chip\">2pm</span>",
+      "css": ".ds-chip { padding: 5px 11px; border-radius: 999px; background: color-mix(in oklab, oklch(0.24 0.02 285) 8%, transparent); color: oklch(0.24 0.02 285); font-size: 0.75rem; font-weight: 700; font-variant-numeric: tabular-nums; text-transform: uppercase; } .ds-chip.due { background: oklch(0.55 0.195 22); color: oklch(0.99 0.004 95); }"
+    },
+    {
+      "name": "Filled Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "A field is a block: filled, no border, 44px minimum. Focus draws a 3px ring in the section's mark instead of changing an edge.",
+      "html": "<input class=\"ds-input\" placeholder=\"Say it here, let it go\">",
+      "css": ".ds-input { min-height: 44px; padding: 0 14px; border: none; border-radius: 14px; background: oklch(0.995 0.003 95); font-size: 1rem; } .ds-input:focus { outline: none; box-shadow: 0 0 0 3px color-mix(in oklab, var(--mark) 45%, transparent); }"
+    },
+    {
+      "name": "Dial",
+      "kind": "timer",
+      "refersTo": "ring-timer",
+      "description": "The ring sits on a circular surface fill so it reads as a round button. It rests at 72% ink and travels while running: red to green riding out a craving, ink to green across a study block.",
+      "html": "<svg class=\"ds-dial\" viewBox=\"0 0 96 96\"><circle class=\"track\" cx=\"48\" cy=\"48\" r=\"40\"/><circle class=\"prog\" cx=\"48\" cy=\"48\" r=\"40\"/><text x=\"48\" y=\"53\" text-anchor=\"middle\">4:32</text></svg>",
+      "css": ".ds-dial { width: 104px; border-radius: 999px; background: oklch(0.995 0.003 95); cursor: pointer; pointer-events: bounding-box; } .ds-dial .track { fill: none; stroke: color-mix(in oklab, currentColor 12%, transparent); stroke-width: 8; } .ds-dial .prog { fill: none; stroke: var(--ring-stroke, var(--mark)); stroke-width: 8; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 48px 48px; transition: stroke-dashoffset 1s linear; }"
+    },
+    {
+      "name": "Focus Takeover",
+      "kind": "state",
+      "refersTo": "session-running",
+      "description": "A running timer becomes the page: the dial grows to 42-52vh with a 3px stroke, a canvas field of motes drifts behind it and intensifies with progress, and the rest of the day drops to 12-30% opacity rather than disappearing.",
+      "html": "<section class=\"ds-section\"><div class=\"station session-running\"><canvas class=\"focus-field\"></canvas><svg class=\"ring-timer ring-timer-lg\">...</svg></div></section>",
+      "css": ".page:has(.session-running) .grid > section { opacity: 0.12; filter: saturate(0.15); pointer-events: none; transition: opacity 700ms cubic-bezier(0.22,1,0.36,1); } .page:has(.session-running) .grid > section:has(.session-running) { grid-column: 1 / -1; grid-row: 1 / -1; position: absolute; inset: 0; z-index: 5; opacity: 1; filter: none; background: color-mix(in oklab, var(--bg) 86%, transparent); justify-content: center; } .station.session-running .ring-timer-lg { width: min(42vh, 320px); height: auto; } .station.session-running .ring-progress { stroke-width: 3; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Blocks",
+    "overview": "Everything on this page is a solid object you can hit. No rules, hairlines, dividers or underlines: separation comes from gaps between filled blocks. The page is neutral, with exactly two colours, both of which name an outcome: green is kept, red is a slip or a deadline. Headings are 20px, body is 16px, nothing interactive is under 44px.",
+    "keyCharacteristics": [
+      "Zero hairlines, rules, dividers or underlines. Gaps and fills only.",
+      "Every element is a block with real padding and a 14px radius.",
+      "One neutral field tone for every section on every page.",
+      "Two colours in the whole product: green is kept, red is a slip or a deadline.",
+      "Headings 20px sentence case, body 16px, minimum target 44px.",
+      "A running timer takes the whole stage; the rest of the day is quietened to 12-30%, never hidden."
+    ],
+    "rules": [
+      "The Two Colours Rule. Green and red are the entire palette and both name an outcome. If a new element wants colour, ask which outcome it reports; if none, it is neutral.",
+      "The Earned Saturation Rule. Full chroma only on a state the user caused or a deadline that is genuinely close.",
+      "The Tinted Neutral Rule. No pure white, no pure black; every neutral carries a trace of warmth.",
+      "The Label Is A Heading Rule. Section titles are 20px sentence-case headings, never uppercase micro-labels.",
+      "The State Is The Block Rule. A control shows its state by filling entirely, not by marking a corner."
+    ],
+    "dos": [
+      "Do make everything a block with a fill, a radius, and 44px of height.",
+      "Do keep sections neutral and let headings and position separate them.",
+      "Do set section headings at 20px sentence case.",
+      "Do show state by filling the whole control.",
+      "Do reserve green for kept and red for slipped or due, nothing else."
+    ],
+    "donts": [
+      "Don't add a rule, hairline, divider, underline or side stripe.",
+      "Don't put a block inside a block, or a border on anything.",
+      "Don't introduce a third colour, or give a section a hue of its own.",
+      "Don't use colour for anything that isn't an outcome: kept, slipped, due.",
+      "Don't shrink a label below 0.75rem or set one in uppercase tracking."
+    ]
+  }
+}

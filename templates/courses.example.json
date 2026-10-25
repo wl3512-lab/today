@@ -1,0 +1,75 @@
+{
+  "_comment": "Made-up example. Setup writes your own version of this to ~/.courses.json; see templates/SETTINGS.md for every field.",
+  "term": "Fall 2026",
+  "studyPlaylist": "https://soundcloud.com/your-study-set",
+  "calendar": { "ics": "", "note": "Google Calendar > Settings > your calendar > Secret address in iCal format. Leave empty to skip." },
+  "courses": [
+    {
+      "key": "chem101",
+      "name": "General Chemistry",
+      "short": "Chem",
+      "code": "CHEM 101",
+      "lmsId": 11,
+      "instructor": "Dr. Okafor",
+      "ta": "Jordan Lee",
+      "officeHours": "Wed 2-4pm, Science Hall 210",
+      "meets": { "day": "Monday", "start": "10:00", "end": "11:15", "room": "Science Hall 100" },
+      "term": { "start": "2026-08-24", "end": "2026-12-11" },
+      "sources": [
+        { "kind": "canvas", "url": null, "role": "assignments, quizzes, grades", "access": "session" },
+        { "kind": "site", "url": "https://chem.stateu.edu/101", "role": "slides + problem sets", "access": "public" }
+      ],
+      "grading": { "Problem sets": 0.2, "Quizzes": 0.2, "Midterm": 0.25, "Final": 0.35 },
+      "gradeScheme": {
+        "weights": { "Problem sets": 0.2, "Quizzes": 0.2, "Midterm": 0.25, "Final": 0.35 },
+        "drops": { "Quizzes": 1 },
+        "source": "syllabus p.2"
+      },
+      "attendance": { "allowed": 3, "countsFrom": null, "excusedMatters": true, "late": null,
+        "rule": "3 absences allowed; tell the instructor before class to be excused.",
+        "over": "Each absence past 3 takes 1% off the final grade." },
+      "autoPlan": { "quiz": 2 },
+      "kit": { "apps": [], "physical": ["calculator", "periodic table", "water"] },
+      "briefNotes": "Show units on every answer; problem sets are graded on work, not just the final number."
+    },
+    {
+      "key": "writ150",
+      "name": "Writing Seminar: Cities",
+      "short": "Writing",
+      "code": "WRIT 150",
+      "lmsId": 12,
+      "instructor": "Prof. Hale",
+      "meets": { "day": "Tuesday", "start": "13:00", "end": "14:15", "room": "Humanities 304" },
+      "term": { "start": "2026-08-24", "end": "2026-12-11" },
+      "sources": [
+        { "kind": "canvas", "url": null, "role": "readings + essay drop boxes", "access": "session" },
+        { "kind": "gdoc", "url": "https://docs.google.com/document/d/EXAMPLE/pub", "role": "syllabus (published doc)", "access": "public" }
+      ],
+      "recurring": [
+        { "title": "Reading response", "weekday": "Monday", "time": "23:59", "from": "2026-08-31", "until": "2026-12-07",
+          "skip": ["2026-11-30"], "note": "300 words on that week's reading", "source": "syllabus" }
+      ],
+      "assignments": { "cadence": "weekly", "due": "Mondays 11:59pm", "marking": "complete / incomplete",
+        "items": [ { "n": 1, "title": "Essay 1 draft", "due": "2026-09-25T23:59:00-05:00", "submitVia": "Canvas" } ] },
+      "kit": { "physical": ["printed reading", "pen"] }
+    },
+    {
+      "key": "cs110",
+      "name": "Intro to Programming",
+      "short": "CS",
+      "code": "CS 110",
+      "lmsId": null,
+      "instructor": "Dr. Patel",
+      "meets": { "day": "Thursday", "start": "15:30", "end": "16:45", "room": "Engineering 120" },
+      "term": { "start": "2026-08-24", "end": "2026-12-11" },
+      "sources": [
+        { "kind": "github", "url": "https://github.com/stateu-cs110/fall26", "role": "lecture notes + labs", "access": "public" },
+        { "kind": "github-weekly", "url": "https://github.com/stateu-cs110/fall26", "role": "README week table + a ## Homework section in each week file", "access": "public" }
+      ],
+      "kit": { "apps": ["Visual Studio Code"] }
+    }
+  ],
+  "ignore": [
+    { "name": "Orientation Seminar", "lmsId": 9, "why": "finished, no work" }
+  ]
+}

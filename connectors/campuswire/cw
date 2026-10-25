@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""cw - Campuswire CLI.
+
+Same approach as the Brightspace connector: Campuswire is an SPA behind a
+login, so we drive its own API with fetch() from inside a logged-in
+agent-browser session. Login state lives in a persistent Chrome profile.
+
+Conforms to the Item contract in ../brightspace/CONNECTOR.md.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+SESSION = "campuswire"
+PROFILE = os.path.expanduser("~/.campuswire-profile")
+HOST = "https://campuswire.com"
+API = "https://api.campuswire.com/v1"
+CONF = os.path.expanduser("~/.campuswire.json")
+SOURCE = "campuswire"
+CACHE = os.path.expanduser("~/.campuswire-cache.json")
+
+# Set with `cw use <groupId>`; the math class feed the user pointed at.
+DEFAULT_GROUP = os.environ.get("CAMPUSWIRE_GROUP", "")   # each class has its own group id (in its feed URL)
+HEADED = False
+
+
+def strip_tags(t):
+    import html as _html
+    import re
+    t = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", t or "")
+    t = re.sub(r"(?i)<br\s*/?>|</p>", "\n", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    return _html.unescape(t).strip()
+
+
+def out(obj, as_json, printer):
+    if as_json:
+        print(json.dumps(obj, indent=2))
+    else:
+        printer(obj)
+
+
+class AuthError(Exception):
+    pass
+
+
+class BrowserError(Exception):
+    pass
+
+
+# launchd hands a job PATH=/usr/bin:/bin:/usr/sbin:/sbin, which does not
+# include ~/.local/bin where agent-browser is installed. A bare "agent-browser"
+# therefore works in a terminal and raises FileNotFoundError under the
+# scheduler - a traceback, not a BrowserError. Resolve to an absolute path.
+_AB_PATH = None
+
+
+def agent_browser_bin():
+    global _AB_PATH
+    if _AB_PATH:
+        return _AB_PATH
+    found = shutil.which("agent-browser")
+    if not found:
+        for cand in ("~/.local/bin/agent-browser", "/opt/homebrew/bin/agent-browser",
+                     "/usr/local/bin/agent-browser"):
+            cand = os.path.expanduser(cand)
+            if os.access(cand, os.X_OK):
+                found = cand
+                break
+    if not found:
+        raise BrowserError(
+            "agent-browser not found. Install it, or add its directory to PATH.")
+    _AB_PATH = found
+    return found
+
+
+def _cmd(args, headed=False):
+    cmd = [agent_browser_bin(), "--session", SESSION, "--profile", PROFILE]
+    if HEADED or headed:
+        cmd.append("--headed")
+    return cmd + args
+
+
+def ab(args, headed=False, timeout=180):
+    try:
+        return subprocess.run(_cmd(args, headed), capture_output=True, text=True,
+                              timeout=timeout)
+    except FileNotFoundError as exc:
+        raise BrowserError(str(exc))
+
+
+def current_url():
+    p = ab(["get", "url", "--json"], timeout=60)
+    try:
+        data = json.loads(p.stdout).get("data", {})
+        if isinstance(data, str):
+            return data
+        return data.get("url") or data.get("result") or ""
+    except Exception:
+        return ""
+
+
+def ensure_origin(group=None, headed=False):
+    target = "%s/c/%s/feed" % (HOST, group or DEFAULT_GROUP)
+    if current_url().startswith(HOST):
+        return
+    p = ab(["open", target], headed=headed, timeout=180)
+    if p.returncode != 0:
+        raise BrowserError(p.stderr.strip() or p.stdout.strip() or "failed to open Campuswire")
+    for _ in range(12):
+        url = current_url()
+        if url.startswith(HOST):
+            if "/login" in url or "/signin" in url:
+                raise AuthError()
+            return
+        time.sleep(0.5)
+    raise AuthError()
+
+
+JS_PRELUDE = r"""
+// The API lives on api.campuswire.com - a different origin from the page - so
+// cookies do not apply. Auth is a JWT, and localStorage stores it JSON-QUOTED:
+// using the raw value yields Bearer "eyJ..." and a silent 401.
+function tok() {
+  const raw = localStorage.getItem("token") || "";
+  try { return JSON.parse(raw); } catch (e) { return raw; }
+}
+async function api(path) {
+  const r = await fetch("https://api.campuswire.com/v1" + path, {
+    headers: { "Authorization": "Bearer " + tok(), "Accept": "application/json" },
+  });
+  if (r.status === 401 || r.status === 403) throw new Error("AUTH_EXPIRED");
+  const t = await r.text();
+  if (!r.ok) throw new Error("HTTP_" + r.status + " " + path);
+  if (!t) return null;
+  try { return JSON.parse(t); } catch (e) { return t; }
+}
+function asList(j) {
+  if (Array.isArray(j)) return j;
+  if (!j) return [];
+  return j.posts || j.items || j.events || j.data || [];
+}
+"""
+
+
+def load_conf():
+    try:
+        with open(CONF) as f:
+            return json.load(f)
+    except (IOError, ValueError):
+        return {"groups": {}}
+
+
+def save_conf(c):
+    with open(CONF, "w") as f:
+        json.dump(c, f, indent=2)
+
+
+def group_uuid(code):
+    """Short codes (G20FB10A4) are not the API's UUIDs; the mapping is learned
+    once by watching the app and cached."""
+    g = load_conf().get("groups", {}).get(code)
+    if g and g.get("uuid"):
+        return g["uuid"]
+    raise BrowserError(
+        "No UUID cached for group %s. Run: cw discover --group %s" % (code, code))
+
+
+def run_js_raw(body, timeout=300):
+    script = "(async () => {\n%s\n%s\n})()" % (JS_PRELUDE, body)
+    p = subprocess.run(_cmd(["eval", "--stdin", "--json"]),
+                       input=script, capture_output=True, text=True, timeout=timeout)
+    raw = p.stdout.strip()
+    if not raw:
+        raise BrowserError(p.stderr.strip() or "no output from agent-browser")
+    try:
+        env = json.loads(raw)
+    except json.JSONDecodeError:
+        raise BrowserError(raw[:400])
+    if not env.get("success"):
+        err = json.dumps(env.get("error"))
+        if "AUTH" in err.upper():
+            raise AuthError()
+        raise BrowserError(err)
+    return env.get("data", {}).get("result")
+
+
+def run_js(body, group=None, timeout=300):
+    ensure_origin(group=group)
+    return run_js_raw(body, timeout=timeout)
+
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+def cmd_login(a):
+    global HEADED
+    ab(["close"], timeout=60)
+    time.sleep(1)
+    HEADED = True
+    print("Opening Campuswire. Log in in the window that appears.\n")
+    p = ab(["open", "%s/c/%s/feed" % (HOST, a.group)], headed=True, timeout=180)
+    if p.returncode != 0:
+        print("Could not open the browser: %s" % (p.stderr.strip() or p.stdout.strip()),
+              file=sys.stderr)
+        return 1
+    deadline = time.time() + a.wait
+    while time.time() < deadline:
+        url = current_url()
+        if url.startswith(HOST) and "/login" not in url and "/signin" not in url:
+            try:
+                # localStorage/session token is the reliable "logged in" signal
+                ok = run_js_raw(
+                    'return !!(localStorage.getItem("token") || '
+                    'localStorage.getItem("accessToken") || document.cookie.length > 20);')
+                if ok:
+                    print("Logged in. Session saved to %s" % PROFILE)
+                    return 0
+            except (AuthError, BrowserError):
+                pass
+        time.sleep(3)
+    print("Timed out after %ds waiting for login." % a.wait, file=sys.stderr)
+    return 1
+
+
+def cmd_discover(a):
+    """Learn the group UUID by watching the calls the app itself makes."""
+    ensure_origin(group=a.group)
+    ab(["network", "requests", "--clear"], timeout=60)
+    ab(["open", "%s/c/%s/feed" % (HOST, a.group)], timeout=180)
+    time.sleep(a.wait)
+    p = ab(["network", "requests", "--filter", "api.campuswire.com/v1/group", "--json"],
+           timeout=90)
+    import re
+    uuids = re.findall(r"/v1/group/([0-9a-f-]{36})", p.stdout)
+    if not uuids:
+        print("No group UUID seen. Try --wait 15.", file=sys.stderr)
+        return 1
+    # the group whose posts were fetched is the one being viewed
+    best = max(set(uuids), key=uuids.count)
+    conf = load_conf()
+    conf.setdefault("groups", {})[a.group] = {"uuid": best}
+    try:
+        name = run_js_raw('return (await api("/group/%s") || {}).name || null;' % best)
+        if name:
+            conf["groups"][a.group]["name"] = name
+    except Exception:
+        pass
+    save_conf(conf)
+    print("%s -> %s%s" % (a.group, best,
+                          "  (%s)" % conf["groups"][a.group].get("name", "")))
+    print("cached in %s" % CONF)
+    return 0
+
+
+def cmd_posts(a):
+    gid = group_uuid(a.group)
+    data = run_js(
+        'return asList(await api("/group/%s/posts?number=%d"));' % (gid, a.limit),
+        group=a.group)
+
+    def show(posts):
+        if not posts:
+            print("No posts.")
+        for p in posts:
+            when = (p.get("createdAt") or p.get("created_at") or "")[:10]
+            who = (p.get("author") or {}).get("name") or p.get("authorName") or ""
+            print("\n[%s] %s" % (when, p.get("title") or "(untitled)"))
+            if who:
+                print("  by %s" % who)
+            body = strip_tags(p.get("body") or p.get("content") or "")
+            for ln in body.splitlines()[:a.lines]:
+                if ln.strip():
+                    print("  %s" % ln)
+    out(data, a.json, show)
+    return 0
+
+
+def cmd_calendar(a):
+    data = run_js('return asList(await api("/calendar?includeAttendance=false"));',
+                  group=a.group)
+
+    def show(evs):
+        if not evs:
+            print("No calendar events.")
+        for e in evs:
+            print("%-22s %s" % ((e.get("startsAt") or e.get("start") or "?")[:16],
+                                e.get("title") or e.get("name") or "(untitled)"))
+    out(data, a.json, show)
+    return 0
+
+
+def cmd_api(a):
+    path = a.path if a.path.startswith("/") else "/" + a.path
+    print(json.dumps(run_js('return await api(%s);' % json.dumps(path),
+                            group=a.group), indent=2))
+    return 0
+
+
+def cmd_status(a):
+    try:
+        ensure_origin(group=a.group)
+    except AuthError:
+        print("Not logged in. Run: cw login")
+        return 1
+    url = current_url()
+    print("Session alive - currently at %s" % url)
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="cw", description="Campuswire CLI")
+    p.add_argument("--group", default=DEFAULT_GROUP, help="Campuswire group id (from the class feed URL /c/<id>/feed)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("login", help="one-time Campuswire login (opens a window)")
+    s.add_argument("--wait", type=int, default=300)
+    s.set_defaults(fn=cmd_login)
+
+    s = sub.add_parser("status", help="is the session alive?")
+    s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("discover", help="capture the API calls the app makes")
+    s.add_argument("--wait", type=int, default=8)
+    s.set_defaults(fn=cmd_discover)
+
+    s = sub.add_parser("posts", help="recent posts in the class feed")
+    s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--lines", type=int, default=6)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_posts)
+
+    s = sub.add_parser("calendar", help="calendar events")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_calendar)
+
+    s = sub.add_parser("api", help="raw authenticated GET against the Campuswire API")
+    s.add_argument("path")
+    s.set_defaults(fn=cmd_api)
+
+    a = p.parse_args()
+    try:
+        return a.fn(a)
+    except AuthError:
+        print("Campuswire session expired. Run: cw login", file=sys.stderr)
+        return 1
+    except BrowserError as e:
+        print("Browser error: %s" % e, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

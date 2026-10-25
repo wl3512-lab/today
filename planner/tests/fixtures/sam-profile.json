@@ -1,0 +1,9 @@
+{
+  "name": "Sam", "fullName": "Sam Rivera", "school": "State University",
+  "lms": {"kind": "canvas", "host": "canvas.stateu.edu", "sso": "State U sign-in"},
+  "notesUrl": "https://notes.example.com/sam", "discordName": "", "githubWikiName": "srivera",
+  "publicHosts": ["chem.stateu.edu"], "plugins": [], "features": [],
+  "quizPrep": {"courses": ["chem101"],
+    "settings": {"chem101": {"subject": "chem", "title": "CHEM 101, General Chemistry", "professor": "Dr. Okafor",
+      "label": "CHEM 101", "fileTag": "chem101", "lessonWord": "Chapter", "noCalculator": false}}}
+}

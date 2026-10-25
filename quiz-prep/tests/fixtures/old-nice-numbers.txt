@@ -1,0 +1,8 @@
+NO CALCULATOR on this quiz, so every number must work out cleanly by hand, the way the professor writes them:
+- Sample sizes are perfect squares (16, 25, 36, 49, 64, 81, 100, 144, 225, 256, 400, 900) so sqrt(n) is a whole number.
+- sigma / sqrt(n) divides evenly (e.g. 45/9 = 5, 9/12 = 0.75, 15/10 = 1.5).
+- For proportions, p(1-p) is a perfect square decimal (0.16 from 0.2*0.8, 0.09 from 0.1*0.9, 0.25 from 0.5*0.5, 0.0576 is NOT ok) and n is a perfect square, so sqrt(p(1-p)/n) is exact (0.4/16 = 0.025, 0.3/20 = 0.015).
+- z-scores come out as whole numbers or halves: ±0.5, ±1, ±1.5, ±2, ±2.5, ±3.
+- Probabilities come from the empirical rule or standard table values: 0.6826, 0.9544, 0.9974, 0.1587, 0.8413, 0.0228, 0.9772, 0.0013, 0.9987, 0.0668, 0.3085.
+- Critical values for tests use the course table: two-tailed 0.05 -> ±2, 0.1 -> ±1.65, 0.01 -> ±2.58; one-tailed 0.05 -> ±1.65, 0.1 -> ±1.28, 0.01 -> ±2.33.
+- Every final answer is exact. Never write an answer that needed rounding (like 0.048 or 2.14).
